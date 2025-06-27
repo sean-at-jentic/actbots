@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 
 from ..reasoners.standard_reasoner import StandardReasoner
 from ..platform.jentic_client import JenticClient
+from ..utils.llm import BaseLLM
 
 
 class TestStandardReasoner:
@@ -13,31 +14,28 @@ class TestStandardReasoner:
     def setup_method(self):
         """Set up test fixtures"""
         self.jentic_client = Mock(spec=JenticClient)
-        self.openai_client = Mock()
+        self.llm = Mock(spec=BaseLLM)
         
-        # Mock OpenAI response
-        self.mock_response = Mock()
-        self.mock_response.choices = [Mock()]
-        self.mock_response.choices[0].message.content = "Test response"
-        self.openai_client.chat.completions.create.return_value = self.mock_response
+        # Mock LLM response
+        self.llm.chat.return_value = "Test response"
         
         self.reasoner = StandardReasoner(
             jentic_client=self.jentic_client,
-            openai_client=self.openai_client,
+            llm=self.llm,
             model="gpt-3.5-turbo"  # Use cheaper model for tests
         )
     
     def test_init(self):
         """Test reasoner initialization"""
         assert self.reasoner.jentic_client == self.jentic_client
-        assert self.reasoner.openai_client == self.openai_client
+        assert self.reasoner.llm == self.llm
         assert self.reasoner.model == "gpt-3.5-turbo"
     
-    @patch('jentic_agents.reasoners.standard_reasoner.OpenAI')
-    def test_init_default_openai(self, mock_openai):
-        """Test reasoner initialization with default OpenAI client"""
+    @patch('jentic_agents.reasoners.standard_reasoner.LiteLLMChatLLM')
+    def test_init_default_llm(self, mock_llm):
+        """Test reasoner initialization with default LLM client"""
         StandardReasoner(jentic_client=self.jentic_client)
-        mock_openai.assert_called_once()
+        mock_llm.assert_called_once()
     
     def test_plan(self):
         """Test plan generation"""
@@ -45,7 +43,7 @@ class TestStandardReasoner:
         plan = self.reasoner.plan("Test goal", context)
         
         assert plan == "Test response"
-        self.openai_client.chat.completions.create.assert_called_once()
+        self.llm.chat.assert_called_once()
     
     def test_select_tool_empty_list(self):
         """Test tool selection with empty tool list"""
@@ -65,8 +63,8 @@ class TestStandardReasoner:
             {"id": "tool2", "name": "Tool 2"}
         ]
         
-        # Mock OpenAI to return tool1
-        self.mock_response.choices[0].message.content = "tool1"
+        # Mock LLM to return tool1
+        self.llm.chat.return_value = "tool1"
         
         result = self.reasoner.select_tool("test plan", tools)
         assert result == tools[0]
@@ -78,8 +76,8 @@ class TestStandardReasoner:
             {"id": "tool2", "name": "Tool 2"}
         ]
         
-        # Mock OpenAI to return NONE
-        self.mock_response.choices[0].message.content = "NONE"
+        # Mock LLM to return NONE
+        self.llm.chat.return_value = "NONE"
         
         result = self.reasoner.select_tool("test plan", tools)
         assert result is None
@@ -97,8 +95,8 @@ class TestStandardReasoner:
             "parameters": {"param1": "string"}
         }
         
-        # Mock OpenAI to return valid JSON
-        self.mock_response.choices[0].message.content = '{"param1": "value1"}'
+        # Mock LLM to return valid JSON
+        self.llm.chat.return_value = '{"param1": "value1"}'
         
         result = self.reasoner.act(tool, "test plan")
         assert result == {"param1": "value1"}
@@ -110,8 +108,8 @@ class TestStandardReasoner:
             "parameters": {"param1": "string"}
         }
         
-        # Mock OpenAI to return invalid JSON
-        self.mock_response.choices[0].message.content = "invalid json"
+        # Mock LLM to return invalid JSON
+        self.llm.chat.return_value = "invalid json"
         
         result = self.reasoner.act(tool, "test plan")
         assert result == {}
@@ -139,8 +137,8 @@ class TestStandardReasoner:
     
     def test_evaluate_with_observations(self):
         """Test evaluation with observations"""
-        # Mock OpenAI to return YES
-        self.mock_response.choices[0].message.content = "YES"
+        # Mock LLM to return YES
+        self.llm.chat.return_value = "YES"
         
         result = self.reasoner.evaluate("test goal", ["observation 1"])
         assert result is True
@@ -154,15 +152,15 @@ class TestStandardReasoner:
         )
         
         assert reflection == "Test response"
-        self.openai_client.chat.completions.create.assert_called()
+        self.llm.chat.assert_called()
     
     def test_run_max_iterations_reached(self):
         """Test running reasoner when max iterations is reached"""
         # Setup mocks to always fail tool selection
         self.jentic_client.search.return_value = []
         
-        # Mock OpenAI to always return a plan
-        self.mock_response.choices[0].message.content = "Try to find a tool"
+        # Mock LLM to always return a plan
+        self.llm.chat.return_value = "Try to find a tool"
         
         result = self.reasoner.run("Impossible goal", max_iterations=2)
         
