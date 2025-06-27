@@ -5,7 +5,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-
+#comment
 logger = logging.getLogger(__name__)
 
 
@@ -91,6 +91,7 @@ class JenticClient:
         }
         results = self._jentic_load(**load_kwargs)
         return self._format_load_results(tool_id, results)
+
 
     def _format_load_results(self, tool_id: str, results: Dict[str, Any]) -> Dict[str, Any]:
         """Formats loaded tool definition into a consistent structure."""
