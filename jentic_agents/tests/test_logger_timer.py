@@ -10,10 +10,10 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from jentic_agents.utils.logger import get_logger
-from jentic_agents.utils.timer import Timer
+from jentic_agents.utils.block_timer import Timer
 
 
-def main():
+def test_logger_and_timer():
     """Demonstrate the logger and timer."""
     print("🚀 Testing Logger and Timer")
     print("=" * 50)
@@ -40,7 +40,3 @@ def main():
     
     main_logger.info("\n✅ Test completed successfully!")
     main_logger.info("Check the console output and logs/actbots.log (if file logging is enabled) for results.")
-
-
-if __name__ == "__main__":
-    main() 

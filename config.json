@@ -9,9 +9,9 @@
       "format": "%(name)s:%(levelname)s: %(message)s"
     },
     "file": {
-      "enabled": false,
+      "enabled": true,
       "level": "DEBUG",
-      "path": "logs/actbots.log",
+      "path": "jentic_agents/logs/actbots.log",
       "format": "%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s",
       "rotation": {
         "enabled": true,

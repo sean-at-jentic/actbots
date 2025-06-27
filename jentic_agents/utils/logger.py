@@ -30,7 +30,7 @@ class LoggerSingleton:
     
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from JSON, with fallbacks."""
-        config_path = Path(__file__).parent / "config.json"
+        config_path = Path(__file__).parent / "../../config.json"
         try:
             with open(config_path, 'r') as f:
                 return json.load(f).get('logging', {})
