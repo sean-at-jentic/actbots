@@ -35,7 +35,11 @@ from jentic_agents.inbox.cli_inbox import CLIInbox
 from jentic_agents.memory.scratch_pad import ScratchPadMemory
 from jentic_agents.platform.jentic_client import JenticClient
 from jentic_agents.reasoners.standard_reasoner import StandardReasoner
+# Local LiteLLM wrapper
+from jentic_agents.utils.llm import LiteLLMChatLLM
 
+# Prefix to detect Gemini provider
+_GEMINI_PREFIX = "gemini/"
 
 def main():
     """Run the live demo."""
@@ -54,10 +58,23 @@ def main():
     print("Type your goal below, or 'quit' to exit.")
     print("-" * 50)
 
-    # Check for necessary API keys
-    if not os.getenv("JENTIC_API_KEY") or not os.getenv("OPENAI_API_KEY"):
-        print("❌ ERROR: JENTIC_API_KEY and OPENAI_API_KEY must be set in your .env file.")
-        print("Please copy `.env.template` to `.env` and add your keys.")
+    # ------------------------------------------------------------------
+    # Decide which LLM provider/model to use based on one env var.
+    # ------------------------------------------------------------------
+    model_name = os.getenv("LLM_MODEL", "gemini/gemini-2.5-flash")
+
+    if not os.getenv("JENTIC_API_KEY"):
+        print("❌ ERROR: Missing JENTIC_API_KEY in your .env file.")
+        sys.exit(1)
+
+    using_gemini = model_name.startswith(_GEMINI_PREFIX)
+
+    if using_gemini and not os.getenv("GEMINI_API_KEY"):
+        print("❌ ERROR: LLM_MODEL is Gemini but GEMINI_API_KEY is not set in .env.")
+        sys.exit(1)
+
+    if not using_gemini and not os.getenv("OPENAI_API_KEY"):
+        print("❌ ERROR: LLM_MODEL is OpenAI but OPENAI_API_KEY is not set in .env.")
         sys.exit(1)
 
     try:
@@ -65,11 +82,14 @@ def main():
         # This will use the live Jentic services.
         jentic_client = JenticClient()
 
-        # 2. Initialize the Reasoner
-        # This uses a real OpenAI client by default.
+        # 2. Initialize the LLM wrapper and Reasoner
+        # Build the LLM wrapper for the selected model
+        llm_wrapper = LiteLLMChatLLM(model=model_name)
+
         reasoner = StandardReasoner(
             jentic_client=jentic_client,
-            model=os.getenv("OPENAI_MODEL_NAME", "gpt-4-turbo")
+            llm=llm_wrapper,
+            model=model_name
         )
 
         # 3. Initialize Memory and Inbox
