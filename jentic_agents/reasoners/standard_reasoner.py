@@ -5,9 +5,9 @@ import logging
 from typing import Any, Dict, List, Optional
 import json
 
-from openai import OpenAI
 from ..platform.jentic_client import JenticClient
 from .base_reasoner import BaseReasoner, ReasoningResult
+from ..utils.llm import BaseLLM, LiteLLMChatLLM
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ class StandardReasoner(BaseReasoner):
     def __init__(
         self,
         jentic_client: JenticClient,
-        openai_client: Optional[OpenAI] = None,
+        llm: Optional[BaseLLM] = None,
         model: str = "gpt-4",
         max_tool_calls_per_iteration: int = 3
     ):
@@ -31,12 +31,12 @@ class StandardReasoner(BaseReasoner):
         
         Args:
             jentic_client: Client for Jentic platform operations
-            openai_client: OpenAI client for LLM calls (if None, creates default)
+            llm: LLM client for LLM calls (if None, creates default)
             model: OpenAI model to use for reasoning
             max_tool_calls_per_iteration: Max tool calls per reasoning iteration
         """
         self.jentic_client = jentic_client
-        self.openai_client = openai_client or OpenAI()
+        self.llm = llm or LiteLLMChatLLM(model=model)
         self.model = model
         self.max_tool_calls_per_iteration = max_tool_calls_per_iteration
     
@@ -166,14 +166,13 @@ What should be the next step in the plan to achieve this goal?"""
             }
         ]
         
-        response = self.openai_client.chat.completions.create(
-            model=self.model,
+        response = self.llm.chat(
             messages=messages,
             max_tokens=200,
             temperature=0.7
         )
         
-        return response.choices[0].message.content.strip()
+        return response.strip()
     
     def select_tool(self, plan: str, available_tools: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """Select the most appropriate tool for executing the current plan."""
@@ -206,14 +205,13 @@ Respond with just the tool ID or 'NONE'."""
             }
         ]
         
-        response = self.openai_client.chat.completions.create(
-            model=self.model,
+        response = self.llm.chat(
             messages=messages,
             max_tokens=50,
             temperature=0.1
         )
         
-        selected_id = response.choices[0].message.content.strip()
+        selected_id = response.strip()
         logger.info(f"OpenAI tool selection response: '{selected_id}'")
         
         if selected_id.upper() == 'NONE':
@@ -256,15 +254,14 @@ Generate parameters for this tool as a JSON object."""
             }
         ]
         
-        response = self.openai_client.chat.completions.create(
-            model=self.model,
+        response = self.llm.chat(
             messages=messages,
             max_tokens=200,
             temperature=0.3
         )
         
         try:
-            params = json.loads(response.choices[0].message.content.strip())
+            params = json.loads(response.strip())
             return params
         except json.JSONDecodeError:
             logger.warning("Failed to parse action parameters, using empty dict")
@@ -299,14 +296,13 @@ Has the goal been achieved? Respond with YES or NO only."""
             }
         ]
         
-        response = self.openai_client.chat.completions.create(
-            model=self.model,
+        response = self.llm.chat(
             messages=messages,
             max_tokens=10,
             temperature=0.1
         )
         
-        return response.choices[0].message.content.strip().upper() == "YES"
+        return response.strip().upper() == "YES"
     
     def reflect(self, goal: str, observations: List[str], failed_attempts: List[str]) -> str:
         """Reflect on failures and generate improved strategies."""
@@ -330,14 +326,13 @@ What insights can help improve the approach?"""
             }
         ]
         
-        response = self.openai_client.chat.completions.create(
-            model=self.model,
+        response = self.llm.chat(
             messages=messages,
             max_tokens=200,
             temperature=0.7
         )
         
-        return response.choices[0].message.content.strip()
+        return response.strip()
     
     def _generate_final_answer(self, goal: str, observations: List[str]) -> str:
         """Generate final answer based on goal and observations."""
@@ -358,11 +353,10 @@ Provide a final answer to the goal based on these observations."""
             }
         ]
         
-        response = self.openai_client.chat.completions.create(
-            model=self.model,
+        response = self.llm.chat(
             messages=messages,
             max_tokens=300,
             temperature=0.5
         )
         
-        return response.choices[0].message.content.strip()
+        return response.strip()
