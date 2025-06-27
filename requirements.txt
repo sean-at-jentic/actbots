@@ -1,0 +1,10 @@
+# core
+# jentic-sdk>=0.1.0  # TODO: add when available
+openai>=1.0
+pydantic>=2.0
+
+# dev / quality
+pytest>=8.0
+pytest-mock
+ruff            # fast linter/formatter
+mypy
