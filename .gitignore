@@ -17,8 +17,10 @@ sdist/
 var/
 wheels/
 *.egg-info/
+.env
 .installed.cfg
 *.egg
+.gitignore
 MANIFEST
 
 # Virtual environments

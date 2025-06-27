@@ -17,19 +17,19 @@ from jentic_agents.reasoners.standard_reasoner import StandardReasoner
 from jentic_agents.memory.scratch_pad import ScratchPadMemory
 from jentic_agents.inbox.cli_inbox import CLIInbox
 from jentic_agents.agents.interactive_cli_agent import InteractiveCLIAgent
+from jentic_agents.utils.llm import BaseLLM
 
 
-def create_mock_openai_client():
-    """Create a mock OpenAI client that returns helpful responses."""
-    mock_client = Mock()
+def create_mock_llm():
+    """Create a mock LLM that returns helpful responses."""
+    mock_llm = Mock(spec=BaseLLM)
     call_count = 0
     
-    def mock_create(**kwargs):
+    def mock_chat(messages, **kwargs):
         nonlocal call_count
         call_count += 1
         
         # Simple response generator based on the messages
-        messages = kwargs.get('messages', [])
         user_content = ""
         
         for msg in messages:
@@ -56,13 +56,10 @@ def create_mock_openai_client():
         else:
             response_text = "I understand your request and will proceed accordingly."
         
-        mock_response = Mock()
-        mock_response.choices = [Mock()]
-        mock_response.choices[0].message.content = response_text
-        return mock_response
+        return response_text
     
-    mock_client.chat.completions.create = mock_create
-    return mock_client
+    mock_llm.chat = mock_chat
+    return mock_llm
 
 
 def main():
@@ -76,11 +73,11 @@ def main():
     
     # Create components
     jentic_client = JenticClient()
-    mock_openai = create_mock_openai_client()
+    mock_llm = create_mock_llm()
     
     reasoner = StandardReasoner(
         jentic_client=jentic_client,
-        openai_client=mock_openai,
+        llm=mock_llm,
         model="gpt-4-demo"  # Mock model
     )
     
