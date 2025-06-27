@@ -208,14 +208,20 @@ Respond with just the tool ID or 'NONE'."""
         response = self.llm.chat(
             messages=messages,
             max_tokens=50,
-            temperature=0.1
+            temperature=0.0  # deterministic selection
         )
         
-        selected_id = response.strip()
-        logger.info(f"OpenAI tool selection response: '{selected_id}'")
+        selected_id = (response or "").strip()
+        logger.info(f"LLM tool selection response: '{selected_id}'")
         
-        if selected_id.upper() == 'NONE':
+        # If model explicit says NONE
+        if selected_id.upper() == "NONE":
             return None
+        
+        # Fallback: if model returns empty string, use first candidate
+        if selected_id == "":
+            logger.warning("LLM returned empty tool id – defaulting to first available tool")
+            return available_tools[0]
         
         # Find the selected tool
         for tool in available_tools:

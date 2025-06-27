@@ -100,14 +100,15 @@ class JenticClient:
             # Fallback for non-Pydantic objects.
             results_dict = dict(results)
 
-        return self._format_and_cache_search_results(results_dict.get("matches", {}), top_k)
+        return self._format_and_cache_search_results(results_dict, top_k)
 
-    def _format_and_cache_search_results(self, matches: Dict[str, List[Dict]], top_k: int) -> List[Dict[str, Any]]:
+    def _format_and_cache_search_results(self, payload: Dict[str, Any], top_k: int) -> List[Dict[str, Any]]:
         """Formats search results and caches tool metadata."""
         formatted_results = []
         
-        for tool_type in ['workflows', 'operations']:
-            for tool in matches.get(tool_type, []):
+        # API returns e.g. {"workflows": [...], "operations": [...]}  – iterate over both.
+        for tool_type in ("workflows", "operations"):
+            for tool in payload.get(tool_type, []):
                 tool_id = tool.get('workflow_id') or tool.get('operation_uuid')
                 if not tool_id:
                     continue

@@ -39,4 +39,5 @@ class LiteLLMChatLLM(BaseLLM):
             temperature=kwargs.get("temperature", self.temperature),
             max_tokens=kwargs.get("max_tokens", self.max_tokens),
         )
-        return resp.choices[0].message.content 
+        content = resp.choices[0].message.content
+        return content or ""  # Avoid None propagating 
