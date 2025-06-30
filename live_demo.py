@@ -34,6 +34,7 @@ from jentic_agents.agents.interactive_cli_agent import InteractiveCLIAgent
 from jentic_agents.inbox.cli_inbox import CLIInbox
 from jentic_agents.memory.scratch_pad import ScratchPadMemory
 from jentic_agents.platform.jentic_client import JenticClient
+from jentic_agents.reasoners.bullet_list_reasoner import BulletPlanReasoner
 from jentic_agents.reasoners.standard_reasoner import StandardReasoner
 # Local LiteLLM wrapper
 from jentic_agents.utils.llm import LiteLLMChatLLM
@@ -67,8 +68,11 @@ def main():
         print("❌ ERROR: Missing JENTIC_API_KEY in your .env file.")
         sys.exit(1)
 
-    using_gemini = model_name.startswith(_GEMINI_PREFIX)
+    # using_gemini = model_name.startswith(_GEMINI_PREFIX)
+    
+    using_gemini = False
 
+    # print(f"Using Gemini: {using_gemini}")
     if using_gemini and not os.getenv("GEMINI_API_KEY"):
         print("❌ ERROR: LLM_MODEL is Gemini but GEMINI_API_KEY is not set in .env.")
         sys.exit(1)
@@ -85,15 +89,15 @@ def main():
         # 2. Initialize the LLM wrapper and Reasoner
         # Build the LLM wrapper for the selected model
         llm_wrapper = LiteLLMChatLLM(model=model_name)
+        memory = ScratchPadMemory()
 
-        reasoner = StandardReasoner(
-            jentic_client=jentic_client,
+        reasoner = BulletPlanReasoner(
+            jentic=jentic_client,
+            memory=memory,
             llm=llm_wrapper,
-            model=model_name
         )
 
         # 3. Initialize Memory and Inbox
-        memory = ScratchPadMemory()
         inbox = CLIInbox(prompt="Enter your goal: ")
 
         # 4. Create and run the Agent

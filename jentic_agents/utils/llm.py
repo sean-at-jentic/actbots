@@ -22,7 +22,7 @@ class LiteLLMChatLLM(BaseLLM):
 
     def __init__(
         self,
-        model: str = "gemini-2.5-flash",
+        model: str = "gpt-4",
         temperature: float = 0.2,
         max_tokens: int | None = None,
     ) -> None:
