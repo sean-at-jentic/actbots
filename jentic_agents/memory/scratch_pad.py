@@ -219,5 +219,13 @@ class ScratchPadMemory(BaseMemory):
             else:
                 raise KeyError(f"Cannot navigate path '{dotted_path}' - {part} not accessible")
         
-        # Stringify JSON-serializable objects
-        return json.dumps(item) if not isinstance(item, str) else item
+        # Safely stringify the item
+        if isinstance(item, str):
+            return item
+        
+        # Try JSON serialization first
+        try:
+            return json.dumps(item)
+        except (TypeError, ValueError):
+            # If JSON serialization fails, fall back to string representation
+            return str(item)
