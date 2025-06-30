@@ -35,8 +35,6 @@ autonomous coding agent can fill them out.
 from __future__ import annotations
 
 import json
-import logging
-import os
 import re
 import textwrap
 from collections import deque
@@ -47,33 +45,17 @@ from .base_reasoner import BaseReasoner
 from ..platform.jentic_client import JenticClient  # local wrapper, not the raw SDK
 from ..utils.llm import BaseLLM, LiteLLMChatLLM
 from ..memory.scratch_pad import ScratchPadMemory
+from ..utils.logger import get_logger
 
-# Configure logging to file
-log_dir = "logs"
-os.makedirs(log_dir, exist_ok=True)
-log_file = os.path.join(log_dir, "bullet_reasoner.log")
+# Initialize module logger using the shared logging utility
+logger = get_logger(__name__)
 
-# Create file handler
-file_handler = logging.FileHandler(log_file)
-file_handler.setLevel(logging.DEBUG)
+# ---------------------------------------------------------------------------
+# Module-level constants
+# ---------------------------------------------------------------------------
 
-# Create console handler
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
-
-# Create formatter
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-file_handler.setFormatter(formatter)
-console_handler.setFormatter(formatter)
-
-# Configure logger
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-logger.addHandler(file_handler)
-logger.addHandler(console_handler)
-
-# Prevent duplicate logs
-logger.propagate = False
+# Maximum number of self-healing attempts for a single plan step.
+MAX_REFLECTION_ATTEMPTS = 2
 
 # ---------------------------------------------------------------------------
 # Helper data models
@@ -91,6 +73,7 @@ class Step:
     text: str
     indent: int = 0  # 0 = top‑level, 1 = first sub‑bullet, …
     store_key: Optional[str] = None  # where to stash the result in memory
+    goal_context: Optional[str] = None  # extracted goal context from parentheses
     status: str = "pending"  # pending | running | done | failed
     result: Any = None
     tool_id: Optional[str] = None  # chosen Jentic tool
@@ -102,6 +85,7 @@ class ReasonerState:
     goal: str
     plan: deque[Step] = field(default_factory=deque)
     history: List[str] = field(default_factory=list)  # raw trace lines
+    goal_completed: bool = False  # Track if the main goal has been achieved
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +110,15 @@ def parse_bullet_plan(markdown: str) -> deque[Step]:
         indent_level = indent_spaces // 2  # assume two‑space indents
         content = m.group("content").strip()
 
+        # Parse goal context from parentheses: "... ( goal: actual goal text )"
+        goal_context = None
+        goal_match = re.search(r'\(\s*goal:\s*([^)]+)\s*\)', content)
+        if goal_match:
+            goal_context = goal_match.group(1).strip()
+            # Remove the goal context from the main content
+            content = re.sub(r'\s*\(\s*goal:[^)]+\s*\)', '', content).strip()
+            logger.debug(f"Extracted goal context: {goal_context}")
+
         # Simple directive detection:  "… -> store: weather"
         store_key = None
         if "->" in content:
@@ -134,9 +127,9 @@ def parse_bullet_plan(markdown: str) -> deque[Step]:
                 store_key = directive.split(":", 1)[1].strip()
                 logger.debug(f"Found store directive: {store_key}")
 
-        step = Step(text=content, indent=indent_level, store_key=store_key)
+        step = Step(text=content, indent=indent_level, store_key=store_key, goal_context=goal_context)
         steps.append(step)
-        logger.debug(f"Parsed step: {step}")
+        logger.debug(f"Parsed step: text='{step.text}', goal_context='{step.goal_context}', store_key='{step.store_key}'")
 
     logger.info(f"Parsed {len(steps)} steps from bullet plan")
     return deque(steps)
@@ -161,36 +154,31 @@ class BulletPlanReasoner(BaseReasoner):
         • Be concrete and include the target object and purpose.
         • If a step's result should be kept for later, append "-> store:
           <key>" where <key> is a short variable name.
+        • For steps that might fail (e.g., finding an item), add a sub-bullet with a backup plan starting with `-> if fails:`.
         • Do not mention any specific external tool names.
         • Enclose ONLY the list in triple backticks.
+        • Always append the goal to the end of each step.
 
         Example:
         Goal: 'Find an interesting nytimes article that came out recently'
 
         ```
-        - Find an appropriate api or workflow to use to achieve the goal
-          - Search jentic for nytimes api
-          - Load execution info for the nytimes api operation or workflow which best suits the goal
-        - Execute the nytimes api operation or workflow -> store: nytimes_api_result
-        - Decide on an interesting article
-        - Store that information: -> store: nytimes_article_info
-        - return the title, url, and summary of that article
+        - Find an appropriate api or workflow to use to achieve the goal ( goal: Find an interesting nytimes article that came out recently )
+          - Search jentic for a 'nytimes' api ( goal: Find an interesting nytimes article that came out recently )
+            -> if fails: Search jentic for a generic 'news' api.
+          - Load execution info for the api which best suits the goal ( goal: Find an interesting nytimes article that came out recently )
+            -> if fails: Try loading the next best tool from the search results.
+        - Execute the selected api operation or workflow -> store: nytimes_api_result ( goal: Find an interesting nytimes article that came out recently )
+          -> if fails: Report that the API call failed.
+        - From the results, decide on an interesting article -> store: interesting_article ( goal: Find an interesting nytimes article that came out recently )
+          -> if fails: Report that no articles were found.
+        - Extract the title, url, and summary from the article -> store: article_info ( goal: Find an interesting nytimes article that came out recently )
+        - Return the article information to the user ( goal: Find an interesting nytimes article that came out recently )
         ```
 
         Real:
         Goal: {goal}
         ```
-        """
-    )
-
-    CANDIDATE_SELECTION_PROMPT = textwrap.dedent(
-        """
-        Current plan step:
-        "{step_text}"
-
-        Candidate tools discovered (reply with the *number* of the best match):
-        {tool_lines}
-        If none fit, reply with "0" and suggest a better search query.
         """
     )
 
@@ -200,9 +188,23 @@ class BulletPlanReasoner(BaseReasoner):
         {tool_schema}
         {memory_enum}
 
-        Provide ONLY a JSON object with the arguments for the call. Do not
-        wrap in markdown. Use ${{memory.<key>}} placeholders for values that
-        must be filled from memory.
+        Current goal: {goal}
+
+        Provide ONLY a JSON object with the arguments for the call. DO NOT WRAP IN MARKDOWN CODE BLOCKS.
+        IMPORTANT: Return ONLY the raw JSON object without any ```json or ``` markers.
+
+        IMPORTANT RULES:
+        1. Extract actual parameter values from the goal context when possible
+        2. For IDs extracted from URLs, parse the relevant parts (e.g., entity IDs, resource IDs, etc.)
+        3. **SMART MEMORY EXTRACTION**: When memory contains structured data (arrays, objects), extract specific values you need:
+           - Find items by matching attributes
+           - Extract the actual values from the matching items
+           - DO NOT use placeholders when actual data is available in memory
+        4. Only use ${{memory.<key>}} placeholders for values that are explicitly listed above in available memory AND cannot be extracted
+        5. If a required parameter cannot be determined from the goal or memory, use a descriptive placeholder
+        6. Do NOT output markdown formatting - provide raw JSON only
+
+        Note: Authentication credentials will be automatically injected by the platform.
         """
     )
 
@@ -276,18 +278,25 @@ class BulletPlanReasoner(BaseReasoner):
     def select_tool(self, plan_step: Step, state: ReasonerState):
         logger.info("=== TOOL SELECTION PHASE ===")
         logger.info(f"Selecting tool for step: {plan_step.text}")
+        logger.debug(f"Step goal_context: {plan_step.goal_context}")
+        logger.debug(f"State goal: {state.goal}")
         
         if plan_step.tool_id:
             logger.info(f"Step already has tool_id: {plan_step.tool_id}")
             return plan_step.tool_id
 
-        # Search Jentic by NL description
-        logger.info(f"Searching Jentic for tools matching: {plan_step.text}")
-        hits = self.jentic.search(plan_step.text, top_k=self.search_top_k)
+        # Get AI to extract better search keywords from the goal
+        search_query = self._extract_search_keywords_with_ai(plan_step, state)
+        
+        logger.info(f"Using generated search query: {search_query}")
+
+        # Search Jentic by enhanced NL description
+        logger.info(f"Searching Jentic for tools matching: {search_query}")
+        hits = self.jentic.search(search_query, top_k=self.search_top_k)
         logger.info(f"Jentic search returned {len(hits)} results")
         
         if not hits:
-            logger.error(f"No tools found for step: {plan_step.text}")
+            logger.error(f"No tools found for search query: {search_query}")
             raise RuntimeError(f"No tool found for step: {plan_step.text}")
 
         logger.info("Found tool candidates:")
@@ -302,9 +311,26 @@ class BulletPlanReasoner(BaseReasoner):
             for i, h in enumerate(hits)
         ])
         
-        select_prompt = self.CANDIDATE_SELECTION_PROMPT.format(
-            step_text=plan_step.text, tool_lines=tool_lines
-        )
+        # Include goal context in the selection prompt for better decision making
+        goal_info = ""
+        if plan_step.goal_context:
+            goal_info = f"\nGoal context: {plan_step.goal_context}"
+        elif state.goal:
+            goal_info = f"\nOverall goal: {state.goal}"
+        
+        select_prompt = f"""Current plan step:
+"{plan_step.text}"{goal_info}
+
+Candidate tools discovered (reply with ONLY the *number* of the best match):
+{tool_lines}
+
+IMPORTANT: 
+- Reply with ONLY a single number (1, 2, 3, etc.). 
+- Choose tools that match the platform/service mentioned in the goal context.
+- If none fit, reply with "0".
+
+Number:"""
+        
         logger.debug(f"Tool selection prompt:\n{select_prompt}")
         
         messages = [{"role": "user", "content": select_prompt}]
@@ -322,11 +348,32 @@ class BulletPlanReasoner(BaseReasoner):
             # "3. inspect-request-data …" → 3
             # "Option 2: foo" → 2
             # "0" → 0
-            m = re.search(r"\d+", reply)
-            if not m:
-                raise ValueError("No leading integer found in LLM reply")
-            idx = int(m.group(0)) - 1
-            logger.debug(f"Parsed tool index from LLM reply: {idx}")
+            # Handle verbose responses by looking for various patterns
+            
+            # First try to find a boxed answer (common in verbose responses)
+            boxed_match = re.search(r'\$\\boxed\{(\d+)\}\$', reply)
+            if boxed_match:
+                idx = int(boxed_match.group(1)) - 1
+                logger.debug(f"Found boxed answer, parsed tool index: {idx}")
+            else:
+                # Look for "Number: X" pattern (from our prompt)
+                number_pattern = re.search(r'Number:\s*(\d+)', reply, re.IGNORECASE)
+                if number_pattern:
+                    idx = int(number_pattern.group(1)) - 1
+                    logger.debug(f"Found 'Number:' pattern, parsed tool index: {idx}")
+                else:
+                    # Look for "final answer is X" or similar patterns
+                    final_answer_match = re.search(r'(?:final answer is|answer is|therefore[,\s]+(?:tool\s+)?|the best match is)[:\s]*(\d+)', reply, re.IGNORECASE)
+                    if final_answer_match:
+                        idx = int(final_answer_match.group(1)) - 1
+                        logger.debug(f"Found final answer pattern, parsed tool index: {idx}")
+                    else:
+                        # Fallback to finding the first integer
+                        m = re.search(r"\d+", reply)
+                        if not m:
+                            raise ValueError("No leading integer found in LLM reply")
+                        idx = int(m.group(0)) - 1
+                        logger.debug(f"Used fallback method, parsed tool index: {idx}")
             
             if idx < 0 or idx >= len(hits):
                 logger.error(f"Tool index {idx} out of range (0-{len(hits)-1})")
@@ -345,8 +392,49 @@ class BulletPlanReasoner(BaseReasoner):
             logger.error(f"Error parsing tool selection reply '{reply}': {e}")
             raise RuntimeError(f"Invalid tool index reply: {reply}")
 
+    def _extract_search_keywords_with_ai(self, plan_step: Step, state: ReasonerState) -> str:
+        """Use an LLM to extract a generic, capability-focused search query."""
+        
+        # Combine step text with goal context for a richer prompt
+        context_text = plan_step.text
+        if plan_step.goal_context:
+            context_text += f" (Overall Goal: {plan_step.goal_context})"
+        
+        keyword_prompt = f"""
+        You are an expert at identifying the core capability required to perform a given task.
+        From the task description below, extract a short, generic search query for a tool API.
+        The query should describe the action and the entity, but EXCLUDE specific names, IDs, or data.
+
+        **Example 1:**
+        Task: "Identify the 'To Do' list with ID: 685d4a691a6d5ca063edb440 on the 'Project X' board"
+        Search Query: "Trello get board lists"
+
+        **Example 2:**
+        Task: "Find the user with email 'test@example.com' in Salesforce"
+        Search Query: "Salesforce find user by email"
+
+        **Example 3:**
+        Task: "Create a new calendar event called 'Team Meeting' for tomorrow at 10am"
+        Search Query: "Google Calendar create event"
+
+        **Example 4:**
+        Task: "Send a message to the #general channel on Slack saying 'hello world'"
+        Search Query: "Slack send channel message"
+
+        **Real Task:**
+        Task: "{context_text}"
+
+        Search Query:"""
+
+        logger.info("Calling LLM for keyword extraction")
+        messages = [{"role": "user", "content": keyword_prompt}]
+        keywords = self.llm.chat(messages=messages).strip()
+        
+        logger.info(f"AI extracted keywords: '{keywords}'")
+        return keywords
+
     # 3. ACT ------------------------------------------------------------
-    def act(self, tool_id: str):
+    def act(self, tool_id: str, state: ReasonerState):
         logger.info("=== ACTION PHASE ===")
         logger.info(f"Executing action with tool_id: {tool_id}")
         
@@ -354,7 +442,14 @@ class BulletPlanReasoner(BaseReasoner):
         tool_info = self.jentic.load(tool_id)
         logger.debug(f"Tool info: {tool_info}")
         
-        tool_schema = tool_info.schema_summary if hasattr(tool_info, 'schema_summary') else str(tool_info)
+        # Use tool info directly without filtering credentials
+        # Jentic platform should handle credential injection automatically
+        if isinstance(tool_info, dict):
+            tool_schema = tool_info
+        elif hasattr(tool_info, 'schema_summary') and isinstance(tool_info.schema_summary, dict):
+            tool_schema = tool_info.schema_summary
+        else:
+            tool_schema = str(tool_info)
         logger.debug(f"Tool schema: {tool_schema}")
 
         logger.info("Enumerating memory for prompt")
@@ -365,10 +460,14 @@ class BulletPlanReasoner(BaseReasoner):
             """Escape curly braces so str.format doesn't treat them as placeholders."""
             return text.replace('{', '{{').replace('}', '}}')
 
+        # Convert tool schema to string for formatting if it's a dict
+        tool_schema_str = str(tool_schema) if isinstance(tool_schema, dict) else tool_schema
+
         prompt = self.PARAM_GENERATION_PROMPT.format(
             tool_id=tool_id,
-            tool_schema=_escape_braces(tool_schema),
+            tool_schema=_escape_braces(tool_schema_str),
             memory_enum=_escape_braces(memory_enum),
+            goal=state.goal,
         )
         logger.debug(f"Parameter generation prompt:\n{prompt}")
         
@@ -426,11 +525,36 @@ class BulletPlanReasoner(BaseReasoner):
         state.history.append(history_entry)
         logger.debug(f"Added to history: {history_entry}")
         
-        logger.info("Removing completed step from plan")
-        state.plan.popleft()  # advance to next step
+        # Check if we got a successful API response that created something
+        if self._check_successful_creation(observation):
+            logger.info("Detected successful creation/completion. Marking goal as complete.")
+            state.goal_completed = True
+            state.plan.clear()  # Clear remaining steps
+        else:
+            logger.info("Removing completed step from plan")
+            state.plan.popleft()  # advance to next step
+            
         logger.info(f"Remaining steps in plan: {len(state.plan)}")
         
         return state
+
+    def _check_successful_creation(self, observation: Any) -> bool:
+        """Check if the observation shows we successfully created/completed something."""
+        
+        if isinstance(observation, dict):
+            result = observation.get('result')
+            if result and hasattr(result, 'success') and result.success:
+                if hasattr(result, 'output') and result.output:
+                    output = result.output
+                    if isinstance(output, dict):
+                        # Look for creation indicators: IDs, timestamps, URLs
+                        creation_indicators = ['id', 'message_id', 'timestamp', 'url']
+                        found = [key for key in creation_indicators if key in output]
+                        if found:
+                            logger.info(f"Found creation indicators: {found}")
+                            return True
+        
+        return False
 
     # 5. EVALUATE -------------------------------------------------------
     def evaluate(self, state: ReasonerState) -> bool:
@@ -453,9 +577,11 @@ class BulletPlanReasoner(BaseReasoner):
         logger.info(f"Reflection attempts so far: {current_step.reflection_attempts}")
         
         # Limit reflection attempts to prevent infinite loops
-        MAX_REFLECTION_ATTEMPTS = 2
         if current_step.reflection_attempts >= MAX_REFLECTION_ATTEMPTS:
-            logger.warning(f"Max reflection attempts ({MAX_REFLECTION_ATTEMPTS}) reached for step, giving up")
+            logger.warning(
+                "Max reflection attempts (%s) reached for step, giving up",
+                MAX_REFLECTION_ATTEMPTS,
+            )
             return False
             
         current_step.reflection_attempts += 1
@@ -502,6 +628,11 @@ class BulletPlanReasoner(BaseReasoner):
         while iteration < max_iterations:
             logger.info(f"=== ITERATION {iteration + 1}/{max_iterations} ===")
             
+            # Check if goal is already marked as completed
+            if state.goal_completed:
+                logger.info("Goal marked as completed! Breaking from loop")
+                break
+            
             # Ensure we have at least one step planned.
             if not state.plan:
                 logger.info("No plan exists, generating plan")
@@ -522,7 +653,7 @@ class BulletPlanReasoner(BaseReasoner):
                 tool_id = self.select_tool(current_step, state)
                 logger.info(f"Selected tool: {tool_id}")
                 
-                result = self.act(tool_id)
+                result = self.act(tool_id, state)
                 logger.info(f"Action completed with result type: {type(result)}")
 
                 tool_call_record = {
@@ -557,8 +688,8 @@ class BulletPlanReasoner(BaseReasoner):
             logger.info(f"Iteration {iteration} completed")
 
         logger.info("=== REASONING LOOP COMPLETE ===")
-        success = self.evaluate(state)
-        logger.info(f"Final success status: {success}")
+        success = state.goal_completed or self.evaluate(state)
+        logger.info(f"Final success status: {success} (goal_completed: {state.goal_completed})")
         logger.info(f"Total tool calls made: {len(tool_calls)}")
         logger.info(f"Final history: {state.history}")
 
@@ -607,18 +738,35 @@ class BulletPlanReasoner(BaseReasoner):
         """Parse JSON even if the LLM wrapped it in a Markdown fence."""
         logger.debug(f"Parsing JSON from text: {text}")
         text = text.strip()
-        # Remove leading/trailing triple backticks if present
-        if text.startswith("```") and text.endswith("```"):
-            text = text.strip("`").strip()
-            logger.debug("Removed markdown fences from JSON")
         
-        result = json.loads(text or "{}")
-        logger.debug(f"Parsed JSON result: {result}")
-        return result
+        # Check if text is wrapped in markdown code fences
+        if text.startswith("```") and "```" in text[3:]:
+            # Extract content between markdown fences
+            pattern = r"```(?:json)?\s*([\s\S]+?)\s*```"
+            match = re.search(pattern, text)
+            if match:
+                text = match.group(1).strip()
+                logger.debug(f"Removed markdown fences from JSON")
+        
+        try:
+            result = json.loads(text or "{}")
+            logger.debug(f"Parsed JSON result: {result}")
+            return result
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON: {e}")
+            raise ValueError(f"Failed to parse JSON: {e}\n{text}")
 
     def _resolve_placeholders(self, obj: Any) -> Any:
         """Delegate placeholder resolution to ScratchPadMemory."""
         logger.debug(f"Resolving placeholders in: {obj}")
-        result = self.memory.resolve_placeholders(obj)
-        logger.debug(f"Placeholder resolution result: {result}")
-        return result
+        try:
+            result = self.memory.resolve_placeholders(obj)
+            logger.debug(f"Placeholder resolution result: {result}")
+            return result
+        except KeyError as e:
+            logger.warning(f"Memory placeholder resolution failed: {e}")
+            logger.warning("Continuing with unresolved placeholders - this may cause tool execution to fail")
+            # Return the original object with unresolved placeholders
+            return obj
+
+    
