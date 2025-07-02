@@ -309,16 +309,24 @@ class BulletPlanReasoner(BaseReasoner):
             raise RuntimeError(f"No tool found for step: {plan_step.text}")
 
         logger.info("Found tool candidates:")
-        for i, hit in enumerate(hits):
-            hit_name = hit.get('name', hit.get('id', 'Unknown')) if isinstance(hit, dict) else getattr(hit, 'name', 'Unknown')
-            hit_desc = hit.get('description', '') if isinstance(hit, dict) else getattr(hit, 'description', '')
-            hit_id = hit.get('id', 'Unknown') if isinstance(hit, dict) else getattr(hit, 'id', 'Unknown')
-            logger.info(f"  {i+1}. {hit_name} (ID: {hit_id}) - {hit_desc}")
+        tool_lines_list = []
+        for i, h in enumerate(hits):
+            if isinstance(h, dict):
+                name = h.get('name', h.get('id', 'Unknown'))
+                api_name = h.get('api_name')
+                description = h.get('description', '')
+                hit_id = h.get('id', 'Unknown')
+            else:
+                name = getattr(h, 'name', 'Unknown')
+                api_name = getattr(h, 'api_name', None)
+                description = getattr(h, 'description', '')
+                hit_id = getattr(h, 'id', 'Unknown')
 
-        tool_lines = "\n".join([
-            f"{i+1}. {h.get('name', h.get('id', 'Unknown')) if isinstance(h, dict) else getattr(h, 'name', 'Unknown')} — {h.get('description', '') if isinstance(h, dict) else getattr(h, 'description', '')}"
-            for i, h in enumerate(hits)
-        ])
+            display_name = f"{name} ({api_name})" if api_name else name
+            logger.info(f"  {i+1}. {display_name} (ID: {hit_id}) - {description}")
+            tool_lines_list.append(f"{i+1}. {display_name} — {description}")
+        
+        tool_lines = "\n".join(tool_lines_list)
         
         # Include goal context in the selection prompt for better decision making
         goal_info = ""
@@ -691,20 +699,21 @@ Number:"""
         mem_payload: Dict[str, Any] = {}
         referenced_keys = {k for k in getattr(self.memory, 'keys', lambda: [])() if k in step.text}
 
-        if hasattr(self.memory, "items"):
-            try:
-                for k, v in self.memory.items():  # type: ignore[attr-defined]
-                    if k in referenced_keys:
-                        # Include full value (may still be large JSON)
-                        mem_payload[k] = v
+        try:
+            all_keys = self.memory.keys()
+            for k in all_keys:
+                v = self.memory.retrieve(k)
+                if k in referenced_keys:
+                    # Include full value (may still be large JSON)
+                    mem_payload[k] = v
+                else:
+                    # Provide short preview for context only
+                    if isinstance(v, str):
+                        mem_payload[k] = v[:200] + ("…" if len(v) > 200 else "")
                     else:
-                        # Provide short preview for context only
-                        if isinstance(v, str):
-                            mem_payload[k] = v[:200] + ("…" if len(v) > 200 else "")
-                        else:
-                            mem_payload[k] = v  # non-string values are usually small JSON anyway
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("Could not build memory payload: %s", exc)
+                        mem_payload[k] = v  # non-string values are usually small JSON anyway
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Could not build memory payload: %s", exc)
 
         prompt = (
             "You are performing an internal reasoning step as part of a larger "

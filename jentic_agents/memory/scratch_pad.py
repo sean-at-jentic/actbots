@@ -61,6 +61,8 @@ class ScratchPadMemory(BaseMemory):
         Returns:
             Stored value, or None if key not found
         """
+        if key in self._store:
+            return self._store[key].value
         return self._storage.get(key)
     
     def delete(self, key: str) -> bool:
