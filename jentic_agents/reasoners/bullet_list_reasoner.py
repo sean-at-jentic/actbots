@@ -131,8 +131,22 @@ def parse_bullet_plan(markdown: str) -> deque[Step]:
         steps.append(step)
         logger.debug(f"Parsed step: text='{step.text}', goal_context='{step.goal_context}', store_key='{step.store_key}'")
 
-    logger.info(f"Parsed {len(steps)} steps from bullet plan")
-    return deque(steps)
+    # ------------------------------------------------------------------
+    # Skip container/meta bullets so we only execute leaf actions.
+    # A container is detected when the next bullet has a larger indent
+    # level than the current one.
+    leaf_steps: List[Step] = []
+    for idx, step in enumerate(steps):
+        next_indent = steps[idx + 1].indent if idx + 1 < len(steps) else step.indent
+        if next_indent > step.indent:
+            logger.debug(f"Skipping container step: '{step.text}'")
+            continue  # don't enqueue parent/meta bullets
+        leaf_steps.append(step)
+
+    logger.info(
+        f"Parsed {len(leaf_steps)} leaf steps from bullet plan (original {len(steps)})"
+    )
+    return deque(leaf_steps)
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +178,7 @@ class BulletPlanReasoner(BaseReasoner):
 
         ```
         - Find an appropriate api or workflow to use to achieve the goal ( goal: Find an interesting nytimes article that came out recently )
-          - Search jentic for a 'nytimes' api ( goal: Find an interesting nytimes article that came out recently )
+          - Search jentic for a 'nytimes' api to search for articles ( goal: Find an interesting nytimes article that came out recently )
             -> if fails: Search jentic for a generic 'news' api.
           - Load execution info for the api which best suits the goal ( goal: Find an interesting nytimes article that came out recently )
             -> if fails: Try loading the next best tool from the search results.
@@ -393,43 +407,43 @@ Number:"""
             raise RuntimeError(f"Invalid tool index reply: {reply}")
 
     def _extract_search_keywords_with_ai(self, plan_step: Step, state: ReasonerState) -> str:
-        """Use an LLM to extract a generic, capability-focused search query."""
-        
+        """Use an LLM to rephrase a technical plan step into a high-quality,
+        capability-focused search query for the Jentic tool marketplace."""
+
         # Combine step text with goal context for a richer prompt
         context_text = plan_step.text
         if plan_step.goal_context:
-            context_text += f" (Overall Goal: {plan_step.goal_context})"
-        
-        keyword_prompt = f"""
-        You are an expert at identifying the core capability required to perform a given task.
-        From the task description below, extract a short, generic search query for a tool API.
-        The query should describe the action and the entity, but EXCLUDE specific names, IDs, or data.
+            context_text += f" (Context: This is part of a larger goal to '{plan_step.goal_context}')"
 
-        **Example 1:**
-        Task: "Identify the 'To Do' list with ID: 685d4a691a6d5ca063edb440 on the 'Project X' board"
-        Search Query: "Trello get board lists"
+        keyword_prompt = textwrap.dedent(f"""
+            You are an expert at rephrasing a technical developer task into a clear,
+            capability-focused search query for a tool marketplace. Your goal is to
+            generate a query that accurately describes the desired functionality.
 
-        **Example 2:**
-        Task: "Find the user with email 'test@example.com' in Salesforce"
-        Search Query: "Salesforce find user by email"
+            **Example 1:**
+            Task: "Search jentic for a 'nytimes' api to search for articles"
+            Search Query: "New York Times API for searching articles"
 
-        **Example 3:**
-        Task: "Create a new calendar event called 'Team Meeting' for tomorrow at 10am"
-        Search Query: "Google Calendar create event"
+            **Example 2:**
+            Task: "Search jentic for a 'Discord' api to post a message"
+            Search Query: "Discord API for posting messages"
 
-        **Example 4:**
-        Task: "Send a message to the #general channel on Slack saying 'hello world'"
-        Search Query: "Slack send channel message"
+            **Example 3:**
+            Task: "Find a tool to create a new lead in Salesforce"
+            Search Query: "Salesforce API for lead creation"
 
-        **Real Task:**
-        Task: "{context_text}"
+            **Real Task:**
+            Task: "{context_text}"
 
-        Search Query:"""
+            Search Query:""")
 
         logger.info("Calling LLM for keyword extraction")
         messages = [{"role": "user", "content": keyword_prompt}]
         keywords = self.llm.chat(messages=messages).strip()
-        
+
+        # Clean up the response, removing potential quotes
+        keywords = keywords.strip('"\'')
+
         logger.info(f"AI extracted keywords: '{keywords}'")
         return keywords
 
