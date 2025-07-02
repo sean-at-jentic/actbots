@@ -182,7 +182,6 @@ class BulletPlanReasoner(BaseReasoner):
           -> if fails: Report that the article search failed.
         - From the search_results, identify the most interesting article -> store: interesting_article (goal: Find an interesting nytimes article that came out recently)
           -> if fails: Report that no interesting articles were found.
-        - Extract the title, URL, and summary from the interesting_article -> store: article_info (goal: Find an interesting nytimes article that came out recently)
         - Return the article_info to the user (goal: Find an interesting nytimes article that came out recently)
         ```
 
@@ -721,13 +720,18 @@ Number:"""
         try:
             reply = self.llm.chat(messages=[{"role": "user", "content": prompt}]).strip()
             logger.debug("Reasoning LLM reply: %s", reply)
-            # Attempt to parse JSON result if present
+
+            # Attempt to parse JSON result if present. If successful, resolve
+            # placeholders within the structure. Otherwise, resolve on the raw string.
             if reply.startswith("{") and reply.endswith("}"):
                 try:
-                    return json.loads(reply)
+                    parsed_json = json.loads(reply)
+                    return self._resolve_placeholders(parsed_json)
                 except json.JSONDecodeError:
-                    pass  # fallthrough to raw text
-            return reply
+                    # Not valid JSON, fall through to treat as a raw string
+                    pass
+        
+            return self._resolve_placeholders(reply)
         except Exception as exc:  # noqa: BLE001
             logger.error("Reasoning step failed: %s", exc)
             return f"Error during reasoning: {exc}"
