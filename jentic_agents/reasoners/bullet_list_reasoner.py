@@ -177,17 +177,12 @@ class BulletPlanReasoner(BaseReasoner):
         Goal: 'Find an interesting nytimes article that came out recently'
 
         ```
-        - Find an appropriate api or workflow to use to achieve the goal ( goal: Find an interesting nytimes article that came out recently )
-          - Search jentic for a 'nytimes' api to search for articles ( goal: Find an interesting nytimes article that came out recently )
-            -> if fails: Search jentic for a generic 'news' api.
-          - Load execution info for the api which best suits the goal ( goal: Find an interesting nytimes article that came out recently )
-            -> if fails: Try loading the next best tool from the search results.
-        - Execute the selected api operation or workflow -> store: nytimes_api_result ( goal: Find an interesting nytimes article that came out recently )
-          -> if fails: Report that the API call failed.
-        - From the results, decide on an interesting article -> store: interesting_article ( goal: Find an interesting nytimes article that came out recently )
-          -> if fails: Report that no articles were found.
-        - Extract the title, url, and summary from the article -> store: article_info ( goal: Find an interesting nytimes article that came out recently )
-        - Return the article information to the user ( goal: Find an interesting nytimes article that came out recently )
+        - Find recent news articles about 'artificial intelligence' -> store: search_results (goal: Find an interesting nytimes article that came out recently)
+          -> if fails: Report that the article search failed.
+        - From the search_results, identify the most interesting article -> store: interesting_article (goal: Find an interesting nytimes article that came out recently)
+          -> if fails: Report that no interesting articles were found.
+        - Extract the title, URL, and summary from the interesting_article -> store: article_info (goal: Find an interesting nytimes article that came out recently)
+        - Return the article_info to the user (goal: Find an interesting nytimes article that came out recently)
         ```
 
         Real:
