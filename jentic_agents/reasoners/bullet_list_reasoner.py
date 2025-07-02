@@ -46,6 +46,7 @@ from ..platform.jentic_client import JenticClient  # local wrapper, not the raw 
 from ..utils.llm import BaseLLM, LiteLLMChatLLM
 from ..memory.scratch_pad import ScratchPadMemory
 from ..utils.logger import get_logger
+from .base_reasoner import StepType
 
 # Initialize module logger using the shared logging utility
 logger = get_logger(__name__)
@@ -516,16 +517,24 @@ Number:"""
         current_step = state.plan[0]
         logger.info(f"Updating step: {current_step.text}")
         
-        current_step.result = observation
+        # Unpack tool results to store only the meaningful, serializable output.
+        # This prevents storing non-serializable objects like OperationResult in memory.
+        value_to_store = observation
+        if isinstance(observation, dict) and "result" in observation:
+            result_obj = observation.get("result")
+            if hasattr(result_obj, "output"):
+                logger.debug("Unpacking tool result object to store its output.")
+                value_to_store = result_obj.output
+
+        current_step.result = value_to_store
         current_step.status = "done"
         logger.debug(f"Step status updated to: {current_step.status}")
 
         if current_step.store_key:
             logger.info(f"Storing result in memory with key: {current_step.store_key}")
-            # Save into memory with a generic description
             self.memory.set(
                 key=current_step.store_key,
-                value=observation,
+                value=value_to_store,
                 description=f"Result from step '{current_step.text}'",
             )
             logger.debug(f"Memory updated with key '{current_step.store_key}'")
@@ -618,6 +627,111 @@ Number:"""
             logger.warning("Could not generate meaningful revision")
             return False
 
+    # 7. STEP CLASSIFICATION --------------------------------------------
+    def _classify_step(self, step: Step, state: ReasonerState) -> StepType:
+        """Classify a plan step as TOOL_USING or REASONING via a lightweight LLM prompt.
+
+        The prompt is intentionally minimal to control token cost and reduce
+        hallucination risk.  If the LLM response is not recognised, we fall
+        back to TOOL_USING to keep the agent progressing.
+        """
+        logger.info("Classifying step: '%s'", step.text)
+
+        # Summarise memory keys only (avoid dumping large payloads).
+        mem_keys: List[str] = []
+        if hasattr(self.memory, "keys"):
+            try:
+                mem_keys = list(self.memory.keys())  # type: ignore[arg-type]
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Could not list memory keys: %s", exc)
+        context_summary = (
+            "Memory keys: " + ", ".join(mem_keys) if mem_keys else "Memory is empty."
+        )
+
+        prompt = (
+            "You are a classifier that decides whether a plan step needs an external "
+            "API/tool (`tool-using`) or can be solved by internal reasoning over the "
+            "already-available data (`reasoning`).\n\n"
+            f"Context: {context_summary}\n"
+            f"Step: '{step.text}'\n\n"
+            "Reply with exactly 'tool-using' or 'reasoning'."
+        )
+
+        try:
+            reply = (
+                self.llm.chat(messages=[{"role": "user", "content": prompt}])
+                .strip()
+                .lower()
+            )
+            logger.debug("Classifier reply: %s", reply)
+            if "reason" in reply:
+                return StepType.REASONING
+            if "tool" in reply:
+                return StepType.TOOL_USING
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("LLM classification error: %s", exc)
+
+        # Default/fallback
+        logger.info("Falling back to TOOL_USING classification")
+        return StepType.TOOL_USING
+
+    # 8. EXECUTE REASONING STEP ----------------------------------------
+    def _execute_reasoning_step(self, step: Step, state: ReasonerState) -> Any:
+        """Run an internal-reasoning step via the LLM.
+
+        The prompt receives a *compact* JSON view of memory to keep context
+        size under control.  The LLM should output ONLY the result (no
+        explanatory text).  We make a best-effort attempt to parse JSON if it
+        looks like JSON; otherwise we return the raw string.
+        """
+        logger.info("Executing reasoning step: '%s'", step.text)
+
+        # Build a JSON payload of *relevant* memory keys.
+        # 1. Explicitly include any key that appears in the step text (e.g. "search_results").
+        # 2. For other keys, include only a truncated preview to keep token usage reasonable.
+        mem_payload: Dict[str, Any] = {}
+        referenced_keys = {k for k in getattr(self.memory, 'keys', lambda: [])() if k in step.text}
+
+        if hasattr(self.memory, "items"):
+            try:
+                for k, v in self.memory.items():  # type: ignore[attr-defined]
+                    if k in referenced_keys:
+                        # Include full value (may still be large JSON)
+                        mem_payload[k] = v
+                    else:
+                        # Provide short preview for context only
+                        if isinstance(v, str):
+                            mem_payload[k] = v[:200] + ("…" if len(v) > 200 else "")
+                        else:
+                            mem_payload[k] = v  # non-string values are usually small JSON anyway
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Could not build memory payload: %s", exc)
+
+        prompt = (
+            "You are performing an internal reasoning step as part of a larger "
+            "multi-step plan.\n\n"
+            "Step to perform: {step}\n\n"
+            "Memory (JSON):\n{mem}\n\n"
+            "Return ONLY the direct result that should be stored or used for the "
+            "next steps.  If the result is structured, reply with valid JSON.".format(
+                step=step.text, mem=json.dumps(mem_payload, indent=2)
+            )
+        )
+
+        try:
+            reply = self.llm.chat(messages=[{"role": "user", "content": prompt}]).strip()
+            logger.debug("Reasoning LLM reply: %s", reply)
+            # Attempt to parse JSON result if present
+            if reply.startswith("{") and reply.endswith("}"):
+                try:
+                    return json.loads(reply)
+                except json.JSONDecodeError:
+                    pass  # fallthrough to raw text
+            return reply
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Reasoning step failed: %s", exc)
+            return f"Error during reasoning: {exc}"
+
     # ------------------------------------------------------------------
     # REQUIRED PUBLIC API (BaseReasoner)
     # ------------------------------------------------------------------
@@ -658,20 +772,25 @@ Number:"""
             current_step = state.plan[0]
             logger.info(f"Executing step: {current_step.text}")
 
-            try:
-                tool_id = self.select_tool(current_step, state)
-                logger.info(f"Selected tool: {tool_id}")
-                
-                result = self.act(tool_id, state)
-                logger.info(f"Action completed with result type: {type(result)}")
+            step_type = self._classify_step(current_step, state)
+            logger.info(f"Step classified as: {step_type.value}")
 
-                tool_call_record = {
-                    "tool_id": tool_id,
-                    "step": current_step.text,
-                    "result": result,
-                }
-                tool_calls.append(tool_call_record)
-                logger.debug(f"Recorded tool call: {tool_call_record}")
+            try:
+                if step_type is StepType.TOOL_USING:
+                    tool_id = self.select_tool(current_step, state)
+                    logger.info(f"Selected tool: {tool_id}")
+
+                    result = self.act(tool_id, state)
+                    logger.info(f"Action completed with result type: {type(result)}")
+
+                    tool_calls.append({
+                        "tool_id": tool_id,
+                        "step": current_step.text,
+                        "result": result,
+                    })
+                else:
+                    result = self._execute_reasoning_step(current_step, state)
+                    logger.info("Reasoning step output produced")
 
                 self.observe(result, state)
                 logger.info("Observation phase completed")
