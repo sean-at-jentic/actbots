@@ -158,29 +158,39 @@ class JenticClient:
 
     def _format_load_results(self, tool_id: str, results: Dict[str, Any]) -> Dict[str, Any]:
         """Formats loaded tool definition into a consistent structure."""
+
+        # Check for workflows by iterating through them and matching the UUID
         if 'workflows' in results and results['workflows']:
-            workflow_key = list(results['workflows'].keys())[0]
-            workflow = results['workflows'][workflow_key]
-            return {
-                "id": tool_id,
-                "name": workflow['summary'],
-                "description": workflow['description'],
-                "type": "workflow",
-                "parameters": workflow.get('inputs', {}).get('properties', {}),
-                "executable": True,
-            }
-        elif 'operations' in results and results['operations']:
-            operation = results['operations'][tool_id]
-            return {
-                "id": tool_id,
-                "name": operation['summary'],
-                "description": f"{operation['method']} {operation['path']}",
-                "type": "operation",
-                "parameters": operation.get('inputs', {}).get('properties', {}),
-                "required": operation.get('inputs', {}).get('required', []),
-                "executable": True,
-            }
-        raise ValueError(f"Could not format load result for tool_id: {tool_id}")
+            for workflow_key, workflow_data in results['workflows'].items():
+                if workflow_data.get('workflow_uuid') == tool_id:
+                    return {
+                        "id": tool_id,
+                        "name": workflow_data.get('summary', 'Unnamed Workflow'),
+                        "description": workflow_data.get('description', ''),
+                        "type": "workflow",
+                        "parameters": workflow_data.get('inputs', {}).get('properties', {}),
+                        "executable": True,
+                    }
+
+        # Check for operations, assuming they are keyed by ID
+        if 'operations' in results and results['operations']:
+            if tool_id in results['operations']:
+                operation = results['operations'][tool_id]
+                return {
+                    "id": tool_id,
+                    "name": operation.get('summary', 'Unnamed Operation'),
+                    "description": f"{operation.get('method')} {operation.get('path')}",
+                    "type": "operation",
+                    "parameters": operation.get('inputs', {}).get('properties', {}),
+                    "required": operation.get('inputs', {}).get('required', []),
+                    "executable": True,
+                }
+
+        logger.error(f"Failed to find tool '{tool_id}' in load results payload. Payload received: {results}")
+        raise ValueError(
+            f"Could not format load result for tool_id: {tool_id}. "
+            "The tool was not found in the payload returned by the Jentic API."
+        )
 
     def execute(self, tool_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """
