@@ -183,7 +183,7 @@ What should be the next step in the plan to achieve this goal?"""
             return available_tools[0]
         
         tool_descriptions = "\n".join([
-            f"- {tool['id']}: {tool['name']} - {tool.get('description', '')}"
+            f"- {tool['id']}: {tool['name']} (API: {tool.get('api_name', 'unknown')}) - {tool.get('description', '')}"
             for tool in available_tools
         ])
         
@@ -191,7 +191,8 @@ What should be the next step in the plan to achieve this goal?"""
             {
                 "role": "system",
                 "content": """You are a tool selection assistant. Given a plan and available tools, 
-                select the most appropriate tool or respond with 'NONE' if no tool is suitable."""
+                select the most appropriate tool or respond with 'NONE' if no tool is suitable.
+                Pay attention to the API name in parentheses to select tools from the appropriate platform."""
             },
             {
                 "role": "user",

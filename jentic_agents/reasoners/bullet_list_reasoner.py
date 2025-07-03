@@ -304,10 +304,11 @@ class BulletPlanReasoner(BaseReasoner):
             hit_name = hit.get('name', hit.get('id', 'Unknown')) if isinstance(hit, dict) else getattr(hit, 'name', 'Unknown')
             hit_desc = hit.get('description', '') if isinstance(hit, dict) else getattr(hit, 'description', '')
             hit_id = hit.get('id', 'Unknown') if isinstance(hit, dict) else getattr(hit, 'id', 'Unknown')
-            logger.info(f"  {i+1}. {hit_name} (ID: {hit_id}) - {hit_desc}")
+            hit_api_name = hit.get('api_name', 'unknown') if isinstance(hit, dict) else getattr(hit, 'api_name', 'unknown')
+            logger.info(f"  {i+1}. {hit_name} (ID: {hit_id}, API: {hit_api_name}) - {hit_desc}")
 
         tool_lines = "\n".join([
-            f"{i+1}. {h.get('name', h.get('id', 'Unknown')) if isinstance(h, dict) else getattr(h, 'name', 'Unknown')} — {h.get('description', '') if isinstance(h, dict) else getattr(h, 'description', '')}"
+            f"{i+1}. {h.get('name', h.get('id', 'Unknown')) if isinstance(h, dict) else getattr(h, 'name', 'Unknown')} (API: {h.get('api_name', 'unknown') if isinstance(h, dict) else getattr(h, 'api_name', 'unknown')}) — {h.get('description', '') if isinstance(h, dict) else getattr(h, 'description', '')}"
             for i, h in enumerate(hits)
         ])
         
@@ -327,6 +328,7 @@ Candidate tools discovered (reply with ONLY the *number* of the best match):
 IMPORTANT: 
 - Reply with ONLY a single number (1, 2, 3, etc.). 
 - Choose tools that match the platform/service mentioned in the goal context.
+- Pay attention to the API name in parentheses to select tools from the appropriate platform.
 - If none fit, reply with "0".
 
 Number:"""
