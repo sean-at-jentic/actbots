@@ -213,19 +213,44 @@ class BulletPlanReasoner(BaseReasoner):
 
         try:
             response = self.llm.chat(messages=[{"role": "user", "content": prompt}])
-            # The LLM should return a single number.
-            tool_index = int(response.strip()) - 1
+            raw_reply = response.strip()
 
-            if 0 <= tool_index < len(hits):
-                selected_tool = hits[tool_index]
-                logger.info(f"LLM selected tool #{tool_index + 1}: {selected_tool['id']} ({selected_tool['name']})")
-                return selected_tool["id"]
+            # ------------------------------------------------------------------
+            # Robust parsing: accept either a bare integer or a sentence that
+            # *contains* an integer.  If no valid integer is found, fall back to
+            # heuristic API-name matching before finally defaulting to hits[0].
+            # ------------------------------------------------------------------
+            num_match = re.search(r"(\d+)", raw_reply)
+            if num_match:
+                tool_index = int(num_match.group(1)) - 1
             else:
-                logger.warning(f"LLM returned an invalid tool index: {tool_index + 1}. Falling back to heuristic selection.")
-                return hits[0]["id"]  # Fallback to the first tool
-        except (ValueError, IndexError) as e:
-            logger.error(f"Error during LLM tool selection: {e}. Falling back to heuristic selection.")
-            return hits[0]["id"] # Fallback to the first tool
+                tool_index = None  # will be set by heuristics below
+
+            if tool_index is not None and 0 <= tool_index < len(hits):
+                selected_tool = hits[tool_index]
+                logger.info(
+                    "LLM selected tool #%s: %s (%s)",
+                    tool_index + 1,
+                    selected_tool["id"],
+                    selected_tool.get("name", "unnamed"),
+                )
+                return selected_tool["id"]
+
+            # ----------------- Heuristic back-up -----------------------------
+            # Prefer a tool whose api_name appears in the plan step text.
+            step_text_lower = step.text.lower()
+            for hit in hits:
+                api_name = hit.get("api_name", "").lower()
+                if api_name and api_name in step_text_lower:
+                    logger.warning("Falling back to heuristic api_name match: %s", hit["id"])
+                    return hit["id"]
+
+            # Last resort: first search hit.
+            logger.warning("LLM tool selection failed. Using first search hit as fallback.")
+            return hits[0]["id"]
+        except (ValueError, IndexError, Exception) as e:
+            logger.error(f"Error during LLM tool selection: {e}. Falling back to first search hit.")
+            return hits[0]["id"]
 
     def __init__(
         self,
