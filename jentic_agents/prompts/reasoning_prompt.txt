@@ -1,0 +1,10 @@
+You are performing an internal reasoning step as part of a larger
+multi-step plan.
+
+Step to perform: {step}
+
+Memory (JSON):
+{mem}
+
+Return ONLY the direct result that should be stored or used for the
+next steps.  If the result is structured, reply with valid JSON.

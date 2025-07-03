@@ -1,0 +1,20 @@
+You are an expert at rephrasing a technical developer task into a clear,
+capability-focused search query for a tool marketplace. Your goal is to
+generate a query that accurately describes the desired functionality.
+
+**Example 1:**
+Task: "Search jentic for a 'nytimes' api to search for articles"
+Search Query: "New York Times API for searching articles"
+
+**Example 2:**
+Task: "Search jentic for a 'Discord' api to post a message"
+Search Query: "Discord API for posting messages"
+
+**Example 3:**
+Task: "Find a tool to create a new lead in Salesforce"
+Search Query: "Salesforce API for lead creation"
+
+**Real Task:**
+Task: "{context_text}"
+
+Search Query:

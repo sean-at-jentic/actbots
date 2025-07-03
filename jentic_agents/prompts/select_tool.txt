@@ -1,0 +1,12 @@
+Current plan step:
+"{plan_step_text}"{goal_info}
+
+Candidate tools discovered (reply with ONLY the *number* of the best match):
+{tool_lines}
+
+IMPORTANT: 
+- Reply with ONLY a single number (1, 2, 3, etc.). 
+- Choose tools that match the platform/service mentioned in the goal context.
+- If none fit, reply with "0".
+
+Number:

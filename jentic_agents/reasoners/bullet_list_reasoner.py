@@ -35,10 +35,12 @@ autonomous coding agent can fill them out.
 from __future__ import annotations
 
 import json
+import os
 import re
 import textwrap
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .base_reasoner import BaseReasoner
@@ -158,64 +160,17 @@ def parse_bullet_plan(markdown: str) -> deque[Step]:
 class BulletPlanReasoner(BaseReasoner):
     """Concrete Reasoner that follows the BulletPlan strategy."""
 
-    BULLET_PLAN_PROMPT = textwrap.dedent(
-        """
-        You are a planning assistant.  Given the user goal below, output a
-        *markdown bullet list* plan to achieve it.
-
-        Requirements:
-        • Each action is on its own line, starting with "- ".  Use 2 spaces
-          per indentation level to indicate sub‑steps.
-        • Be concrete and include the target object and purpose.
-        • If a step's result should be kept for later, append "-> store:
-          <key>" where <key> is a short variable name.
-        • For steps that might fail (e.g., finding an item), add a sub-bullet with a backup plan starting with `-> if fails:`.
-        • Do not mention any specific external tool names.
-        • Enclose ONLY the list in triple backticks.
-        • Always append the goal to the end of each step.
-
-        Example:
-        Goal: 'Find an interesting nytimes article that came out recently'
-
-        ```
-        - Find recent news articles about 'artificial intelligence' -> store: search_results (goal: Find an interesting nytimes article that came out recently)
-          -> if fails: Report that the article search failed.
-        - From the search_results, identify the most interesting article -> store: interesting_article (goal: Find an interesting nytimes article that came out recently)
-          -> if fails: Report that no interesting articles were found.
-        - Return the article_info to the user (goal: Find an interesting nytimes article that came out recently)
-        ```
-
-        Real:
-        Goal: {goal}
-        ```
-        """
-    )
-
-    PARAM_GENERATION_PROMPT = textwrap.dedent(
-        """
-        You are about to call the tool **{tool_id}**.
-        {tool_schema}
-        {memory_enum}
-
-        Current goal: {goal}
-
-        Provide ONLY a JSON object with the arguments for the call. DO NOT WRAP IN MARKDOWN CODE BLOCKS.
-        IMPORTANT: Return ONLY the raw JSON object without any ```json or ``` markers.
-
-        IMPORTANT RULES:
-        1. Extract actual parameter values from the goal context when possible
-        2. For IDs extracted from URLs, parse the relevant parts (e.g., entity IDs, resource IDs, etc.)
-        3. **SMART MEMORY EXTRACTION**: When memory contains structured data (arrays, objects), extract specific values you need:
-           - Find items by matching attributes
-           - Extract the actual values from the matching items
-           - DO NOT use placeholders when actual data is available in memory
-        4. Only use ${{memory.<key>}} placeholders for values that are explicitly listed above in available memory AND cannot be extracted
-        5. If a required parameter cannot be determined from the goal or memory, use a descriptive placeholder
-        6. Do NOT output markdown formatting - provide raw JSON only
-
-        Note: Authentication credentials will be automatically injected by the platform.
-        """
-    )
+    @staticmethod
+    def _load_prompt(prompt_name: str) -> str:
+        """Load a prompt from the prompts directory."""
+        current_dir = Path(__file__).parent.parent
+        prompt_path = current_dir / "prompts" / f"{prompt_name}.txt"
+        try:
+            with open(prompt_path, 'r', encoding='utf-8') as f:
+                return f.read().strip()
+        except FileNotFoundError:
+            logger.error(f"Prompt file not found: {prompt_path}")
+            raise RuntimeError(f"Prompt file not found: {prompt_path}")
 
     def __init__(
         self,
@@ -251,7 +206,8 @@ class BulletPlanReasoner(BaseReasoner):
         logger.info("=== PLAN PHASE ===")
         if not state.plan:  # first call → create plan
             logger.info("No existing plan, generating new plan")
-            prompt = self.BULLET_PLAN_PROMPT.format(goal=state.goal)
+            bullet_plan_template = self._load_prompt("bullet_plan")
+            prompt = bullet_plan_template.format(goal=state.goal)
             logger.debug(f"Planning prompt:\n{prompt}")
             
             messages = [{"role": "user", "content": prompt}]
@@ -335,22 +291,16 @@ class BulletPlanReasoner(BaseReasoner):
         elif state.goal:
             goal_info = f"\nOverall goal: {state.goal}"
         
-        select_prompt = f"""Current plan step:
-"{plan_step.text}"{goal_info}
-
-Candidate tools discovered (reply with ONLY the *number* of the best match):
-{tool_lines}
-
-IMPORTANT: 
-- Reply with ONLY a single number (1, 2, 3, etc.). 
-- Choose tools that match the platform/service mentioned in the goal context.
-- If none fit, reply with "0".
-
-Number:"""
+        select_tool_template = self._load_prompt("select_tool")
+        select_tool_prompt = select_tool_template.format(
+            plan_step_text=plan_step.text,
+            goal_info=goal_info,
+            tool_lines=tool_lines
+        )
         
-        logger.debug(f"Tool selection prompt:\n{select_prompt}")
+        logger.debug(f"Tool selection prompt:\n{select_tool_prompt}")
         
-        messages = [{"role": "user", "content": select_prompt}]
+        messages = [{"role": "user", "content": select_tool_prompt}]
         logger.info("Calling LLM for tool selection")
         reply = self.llm.chat(messages=messages).strip()
         logger.info(f"LLM tool selection response: '{reply}'")
@@ -418,27 +368,8 @@ Number:"""
         if plan_step.goal_context:
             context_text += f" (Context: This is part of a larger goal to '{plan_step.goal_context}')"
 
-        keyword_prompt = textwrap.dedent(f"""
-            You are an expert at rephrasing a technical developer task into a clear,
-            capability-focused search query for a tool marketplace. Your goal is to
-            generate a query that accurately describes the desired functionality.
-
-            **Example 1:**
-            Task: "Search jentic for a 'nytimes' api to search for articles"
-            Search Query: "New York Times API for searching articles"
-
-            **Example 2:**
-            Task: "Search jentic for a 'Discord' api to post a message"
-            Search Query: "Discord API for posting messages"
-
-            **Example 3:**
-            Task: "Find a tool to create a new lead in Salesforce"
-            Search Query: "Salesforce API for lead creation"
-
-            **Real Task:**
-            Task: "{context_text}"
-
-            Search Query:""")
+        keyword_extraction_template = self._load_prompt("keyword_extraction")
+        keyword_prompt = keyword_extraction_template.format(context_text=context_text)
 
         logger.info("Calling LLM for keyword extraction")
         messages = [{"role": "user", "content": keyword_prompt}]
@@ -480,7 +411,8 @@ Number:"""
         # Convert tool schema to string for formatting if it's a dict
         tool_schema_str = str(tool_schema) if isinstance(tool_schema, dict) else tool_schema
 
-        prompt = self.PARAM_GENERATION_PROMPT.format(
+        param_generation_template = self._load_prompt("param_generation")
+        prompt = param_generation_template.format(
             tool_id=tool_id,
             tool_schema=_escape_braces(tool_schema_str),
             memory_enum=_escape_braces(memory_enum),
@@ -715,19 +647,14 @@ Number:"""
         except Exception as exc:  # noqa: BLE001
             logger.debug("Could not build memory payload: %s", exc)
 
-        prompt = (
-            "You are performing an internal reasoning step as part of a larger "
-            "multi-step plan.\n\n"
-            "Step to perform: {step}\n\n"
-            "Memory (JSON):\n{mem}\n\n"
-            "Return ONLY the direct result that should be stored or used for the "
-            "next steps.  If the result is structured, reply with valid JSON.".format(
-                step=step.text, mem=json.dumps(mem_payload, indent=2)
-            )
+        reasoning_template = self._load_prompt("reasoning_prompt")
+        reasoning_prompt = reasoning_template.format(
+            step=step.text, 
+            mem=json.dumps(mem_payload, indent=2)
         )
 
         try:
-            reply = self.llm.chat(messages=[{"role": "user", "content": prompt}]).strip()
+            reply = self.llm.chat(messages=[{"role": "user", "content": reasoning_prompt}]).strip()
             logger.debug("Reasoning LLM reply: %s", reply)
 
             # Attempt to parse JSON result if present. If successful, resolve
