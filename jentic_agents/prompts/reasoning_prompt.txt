@@ -1,10 +1,17 @@
-You are performing an internal reasoning step as part of a larger
-multi-step plan.
-
-Step to perform: {step}
-
-Memory (JSON):
-{mem}
-
-Return ONLY the direct result that should be stored or used for the
-next steps.  If the result is structured, reply with valid JSON.
+{
+  "instruction": "Perform an internal reasoning step as part of a larger multi-step plan.",
+  "inputs": {
+    "step": "{step}",
+    "memory": "{mem}"
+  },
+  "rules": [
+    "Return ONLY the direct result that should be stored or used for the next steps.",
+    "If the result is structured, reply with valid JSON.",
+    "Do not include any explanation or extra text."
+  ],
+  "example": {
+    "step": "Summarize the main points from the meeting notes.",
+    "memory": "{\"meeting_notes\": \"Discussed project timeline and deliverables. Decided on next steps.\"}",
+    "output": "{\"summary\": \"Project timeline and deliverables discussed. Next steps decided.\"}"
+  }
+}

@@ -1,21 +1,18 @@
-You are about to call the tool **{tool_id}**.
-{tool_schema}
-{memory_enum}
-
-Current goal: {goal}
-
-Provide ONLY a JSON object with the arguments for the call. DO NOT WRAP IN MARKDOWN CODE BLOCKS.
-IMPORTANT: Return ONLY the raw JSON object without any ```json or ``` markers.
-
-IMPORTANT RULES:
-1. Extract actual parameter values from the goal context when possible
-2. For IDs extracted from URLs, parse the relevant parts (e.g., entity IDs, resource IDs, etc.)
-3. **SMART MEMORY EXTRACTION**: When memory contains structured data (arrays, objects), extract specific values you need:
-   - Find items by matching attributes
-   - Extract the actual values from the matching items
-   - DO NOT use placeholders when actual data is available in memory
-4. Only use ${{memory.<key>}} placeholders for values that are explicitly listed above in available memory AND cannot be extracted
-5. If a required parameter cannot be determined from the goal or memory, use a descriptive placeholder
-6. Do NOT output markdown formatting - provide raw JSON only
-
-Note: Authentication credentials will be automatically injected by the platform.
+{
+  "instruction": "Generate the JSON argument object required to call the specified tool.",
+  "inputs": {
+    "tool_id": "{tool_id}",
+    "tool_schema": "{tool_schema}",
+    "memory_enum": "{memory_enum}",
+    "goal": "{goal}"
+  },
+  "rules": [
+    "Provide ONLY a JSON object with the arguments for the call (no markdown).",
+    "Extract actual parameter values from the goal context when possible.",
+    "Parse IDs from URLs when relevant (e.g., entity IDs, resource IDs).",
+    "When memory contains structured data, extract concrete values instead of using placeholders whenever possible.",
+    "Use ${{memory.<key>}} placeholders ONLY for values explicitly available in memory that cannot be extracted.",
+    "If a required parameter cannot be determined, use a descriptive placeholder.",
+    "Do not output markdown formatting or code fences.",
+    "Authentication credentials will be automatically injected by Jentic" ]
+}
