@@ -29,5 +29,10 @@
         "httpx": { "level": "WARNING" },
         "litellm": { "level": "WARNING" }
       }
+    },
+    "memory": {
+      "chroma_path": "jentic_agents/data/chroma_db",
+      "llm_model": "gpt-4",
+      "embed_model": "text-embedding-3-small"
     }
   } 

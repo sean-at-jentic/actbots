@@ -4,7 +4,7 @@ jentic
 openai>=1.0
 pydantic>=2.0
 python-dotenv>=1.0.0
-litellm
+litellm>=1.0.0
 
 # dev / quality
 pytest>=8.0
