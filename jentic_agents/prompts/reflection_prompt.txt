@@ -1,15 +1,15 @@
-You are a debugging assistant. The previous step in a plan failed. Your task is to revise the step to make it more likely to succeed.
-
-**Original Goal:** {goal}
-**Failed Step:** {failed_step_text}
-**Error Message:** {error_message}
-**Execution History:**
-{history}
-
-Based on the error, provide a concise, one-line revision of the failed step. The new step should be a specific, actionable command.
-
-- If the error was 'tool not found', try rephrasing the step with different keywords.
-- If the error was 'authentication failed', you cannot fix this. Respond with "AUTH_FAILURE".
-- If the error was 'missing parameters', try to make the step more explicit about what to extract from memory.
-
-Revised Step: 
+{
+  "instruction": "Reflect on a failed plan step and suggest a revised step to overcome the failure.",
+  "inputs": {
+    "goal": "{goal}",
+    "failed_step_text": "{failed_step_text}",
+    "error_message": "{error_message}",
+    "history": "{history}"
+  },
+  "rules": [
+    "Analyze the failed step and error message.",
+    "Suggest a revised step that addresses the failure and can be retried.",
+    "If the failure is unrecoverable, respond with 'AUTH_FAILURE' or a clear signal.",
+    "Do not include any explanation or extra text."
+  ]
+}

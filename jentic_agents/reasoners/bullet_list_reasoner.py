@@ -162,13 +162,16 @@ class BulletPlanReasoner(BaseReasoner):
     """Concrete Reasoner that follows the BulletPlan strategy."""
 
     @staticmethod
-    def _load_prompt(prompt_name: str) -> str:
-        """Load a prompt from the prompts directory."""
+    def _load_prompt(prompt_name: str):
+        """Load a prompt from the prompts directory. Return JSON if file is JSON, else string."""
         current_dir = Path(__file__).parent.parent
         prompt_path = current_dir / "prompts" / f"{prompt_name}.txt"
         try:
             with open(prompt_path, 'r', encoding='utf-8') as f:
-                return f.read().strip()
+                content = f.read().strip()
+                if content.startswith('{'):
+                    return json.loads(content)
+                return content
         except FileNotFoundError:
             logger.error(f"Prompt file not found: {prompt_path}")
             raise RuntimeError(f"Prompt file not found: {prompt_path}")
@@ -204,12 +207,19 @@ class BulletPlanReasoner(BaseReasoner):
         )
         
         select_tool_template = self._load_prompt("select_tool")
-        prompt = select_tool_template.format(
-            goal=state.goal,
-            plan_step=step.text,
-            memory_keys=", ".join(self.memory.keys()),
-            tool_candidates=candidate_prompt
-        )
+        if isinstance(select_tool_template, dict):
+            select_tool_template["inputs"]["goal"] = state.goal
+            select_tool_template["inputs"]["plan_step"] = step.text
+            select_tool_template["inputs"]["memory_keys"] = ", ".join(self.memory.keys())
+            select_tool_template["inputs"]["tool_candidates"] = candidate_prompt
+            prompt = json.dumps(select_tool_template, ensure_ascii=False)
+        else:
+            prompt = select_tool_template.format(
+                goal=state.goal,
+                plan_step=step.text,
+                memory_keys=", ".join(self.memory.keys()),
+                tool_candidates=candidate_prompt
+            )
 
         try:
             response = self.llm.chat(messages=[{"role": "user", "content": prompt}])
@@ -287,27 +297,24 @@ class BulletPlanReasoner(BaseReasoner):
         if not state.plan:  # first call → create plan
             logger.info("No existing plan, generating new plan")
             bullet_plan_template = self._load_prompt("bullet_plan")
-            prompt = bullet_plan_template.format(goal=state.goal)
+            if isinstance(bullet_plan_template, dict):
+                # Fill in the goal in the JSON template
+                bullet_plan_template["inputs"]["goal"] = state.goal
+                prompt = json.dumps(bullet_plan_template, ensure_ascii=False)
+            else:
+                prompt = bullet_plan_template.format(goal=state.goal)
             logger.debug(f"Planning prompt:\n{prompt}")
-            
             messages = [{"role": "user", "content": prompt}]
             logger.info("Calling LLM for plan generation")
             response = self.llm.chat(messages=messages)
             logger.info(f"LLM planning response:\n{response}")
-
             # The plan is inside a markdown code fence.
             plan_md = self._extract_fenced_code(response)
             state.plan = parse_bullet_plan(plan_md)
-            
             logger.info(f"Generated plan with {len(state.plan)} steps:")
             for i, step in enumerate(state.plan):
                 logger.info(f"  Step {i+1}: {step.text}")
-
             state.history.append(f"Plan generated ({len(state.plan)} steps)")
-        # except Exception as e:
-        #     logger.error(f"Failed to generate or parse plan: {e}")
-        #     state.failed = True
-        #     state.history.append("Failed to generate plan")
 
     # 2. SELECT TOOL ----------------------------------------------------
     def select_tool(self, plan_step: Step, state: ReasonerState):
@@ -369,12 +376,19 @@ class BulletPlanReasoner(BaseReasoner):
         tool_schema_str = str(tool_schema) if isinstance(tool_schema, dict) else tool_schema
 
         param_generation_template = self._load_prompt("param_generation")
-        prompt = param_generation_template.format(
-            tool_id=tool_id,
-            tool_schema=_escape_braces(tool_schema_str),
-            memory_enum=_escape_braces(memory_enum),
-            goal=state.goal,
-        )
+        if isinstance(param_generation_template, dict):
+            param_generation_template["inputs"]["tool_id"] = tool_id
+            param_generation_template["inputs"]["tool_schema"] = _escape_braces(tool_schema_str)
+            param_generation_template["inputs"]["memory_enum"] = _escape_braces(memory_enum)
+            param_generation_template["inputs"]["goal"] = state.goal
+            prompt = json.dumps(param_generation_template, ensure_ascii=False)
+        else:
+            prompt = param_generation_template.format(
+                tool_id=tool_id,
+                tool_schema=_escape_braces(tool_schema_str),
+                memory_enum=_escape_braces(memory_enum),
+                goal=state.goal,
+            )
         logger.debug(f"Parameter generation prompt:\n{prompt}")
         
         messages = [{"role": "user", "content": prompt}]
@@ -420,18 +434,23 @@ class BulletPlanReasoner(BaseReasoner):
         # Case 1: Tool execution result (dict with 'result' object)
         if isinstance(observation, dict) and "result" in observation:
             result_obj = observation.get("result")
-            # Check for explicit success=False from Jentic SDK
-            if hasattr(result_obj, "success") and result_obj.success is False:
-                success = False
-                # If there's an error message, store it.
-                if hasattr(result_obj, "error") and result_obj.error:
-                    value_to_store = {"error": result_obj.error, "details": result_obj.output}
-                    logger.warning(f"Tool execution failed: {result_obj.error}")
+            # If result_obj is a WorkflowResult or OperationResult, check its .success
+            if hasattr(result_obj, "success"):
+                if not result_obj.success:
+                    success = False
+                    if hasattr(result_obj, "error") and result_obj.error:
+                        value_to_store = {"error": result_obj.error, "details": getattr(result_obj, "output", None)}
+                        logger.warning(f"Tool execution failed: {result_obj.error}")
+                    else:
+                        value_to_store = {"error": "Tool execution failed without a specific message."}
                 else:
-                    value_to_store = {"error": "Tool execution failed without a specific message."}
-            elif hasattr(result_obj, "output"):
-                logger.debug("Unpacking tool result object to store its output.")
-                value_to_store = result_obj.output
+                    # Only mark as done if .success is True
+                    if hasattr(result_obj, "output"):
+                        value_to_store = result_obj.output
+            else:
+                # Fallback: treat as before
+                if hasattr(result_obj, "output"):
+                    value_to_store = result_obj.output
 
         # Case 2: Reasoning step result (raw string or dict)
         elif isinstance(observation, str) and observation.strip().lower() in ("null", ""):
@@ -516,12 +535,19 @@ class BulletPlanReasoner(BaseReasoner):
         current_step.reflection_attempts += 1
         
         reflection_template = self._load_prompt("reflection_prompt")
-        prompt = reflection_template.format(
-            goal=state.goal,
-            failed_step_text=current_step.text,
-            error_message=err_msg,
-            history="\n".join(state.history)
-        )
+        if isinstance(reflection_template, dict):
+            reflection_template["inputs"]["goal"] = state.goal
+            reflection_template["inputs"]["failed_step_text"] = current_step.text
+            reflection_template["inputs"]["error_message"] = err_msg
+            reflection_template["inputs"]["history"] = "\n".join(state.history)
+            prompt = json.dumps(reflection_template, ensure_ascii=False)
+        else:
+            prompt = reflection_template.format(
+                goal=state.goal,
+                failed_step_text=current_step.text,
+                error_message=err_msg,
+                history="\n".join(state.history)
+            )
 
         logger.info("Calling LLM for reflection")
         revised_step = self.llm.chat(messages=[{"role": "user", "content": prompt}]).strip()
@@ -610,10 +636,15 @@ class BulletPlanReasoner(BaseReasoner):
             logger.debug("Could not build memory payload: %s", exc)
 
         reasoning_template = self._load_prompt("reasoning_prompt")
-        reasoning_prompt = reasoning_template.format(
-            step=step.text, 
-            mem=json.dumps(mem_payload, indent=2)
-        )
+        if isinstance(reasoning_template, dict):
+            reasoning_template["inputs"]["step"] = step.text
+            reasoning_template["inputs"]["memory"] = json.dumps(mem_payload, indent=2)
+            reasoning_prompt = json.dumps(reasoning_template, ensure_ascii=False)
+        else:
+            reasoning_prompt = reasoning_template.format(
+                step=step.text,
+                mem=json.dumps(mem_payload, indent=2)
+            )
 
         try:
             reply = self.llm.chat(messages=[{"role": "user", "content": reasoning_prompt}]).strip()

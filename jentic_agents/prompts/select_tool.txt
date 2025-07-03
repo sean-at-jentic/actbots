@@ -1,11 +1,15 @@
-You are an expert system that selects the most appropriate tool for a given task.
-
-**Goal:** {goal}
-**Current Step:** {plan_step}
-**Available Memory Keys:** {memory_keys}
-
-**Tool Candidates:**
-{tool_candidates}
-
-Based on the goal and the current step, which tool from the list is the most suitable?
-Respond with ONLY the number of the best tool. For example, if tool #2 is the best choice, respond with "2".
+{
+  "instruction": "Select the most appropriate tool for the given task from a list of candidates.",
+  "inputs": {
+    "goal": "{goal}",
+    "plan_step": "{plan_step}",
+    "memory_keys": "{memory_keys}",
+    "tool_candidates": "{tool_candidates}"
+  },
+  "rules": [
+    "Base your choice on the goal and the current step.",
+    "Respond with ONLY the number of the best tool (e.g., '2').",
+    "If no tool is suitable, respond with '0'.",
+    "Do not include any explanation or extra text."
+  ]
+}
