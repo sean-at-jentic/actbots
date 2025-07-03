@@ -187,7 +187,7 @@ class BulletPlanReasoner(BaseReasoner):
         return " ".join(tokens[:8])  # keep first few meaningful words
 
     def _select_tool_with_llm(
-        self, step: "Step", hits: List[Dict[str, Any]]
+        self, step: "Step", hits: List[Dict[str, Any]], state: "ReasonerState"
     ) -> Optional[str]:
         """
         Asks the LLM to choose the best tool from a list of candidates.
@@ -202,19 +202,14 @@ class BulletPlanReasoner(BaseReasoner):
                 for idx, tool in enumerate(hits)
             ]
         )
-
-        prompt = textwrap.dedent(
-            f"""
-            You need to select the best tool to perform the following step:
-            **Step:** "{step.text}"
-
-            Here are the available tools:
-            {candidate_prompt}
-
-            Based on the step's requirement, which tool is the most appropriate?
-            Please respond with ONLY the number of the best tool. For example, if tool #2 is the best choice, respond with "2".
-            """
-        ).strip()
+        
+        select_tool_template = self._load_prompt("select_tool")
+        prompt = select_tool_template.format(
+            goal=state.goal,
+            plan_step=step.text,
+            memory_keys=", ".join(self.memory.keys()),
+            tool_candidates=candidate_prompt
+        )
 
         try:
             response = self.llm.chat(messages=[{"role": "user", "content": prompt}])
@@ -307,7 +302,7 @@ class BulletPlanReasoner(BaseReasoner):
         logger.info(f"Jentic search returned {len(search_hits)} results")
 
         # Use the LLM to choose the best tool from the search results.
-        tool_id = self._select_tool_with_llm(plan_step, search_hits)
+        tool_id = self._select_tool_with_llm(plan_step, search_hits, state)
         
         if not tool_id:
             # This can happen if the LLM fails to choose or returns an invalid format.
@@ -479,7 +474,7 @@ class BulletPlanReasoner(BaseReasoner):
         return is_complete
 
     # 6. REFLECT (optional) --------------------------------------------
-    def reflect(self, current_step: Step, err_msg: str) -> bool:
+    def reflect(self, current_step: Step, err_msg: str, state: "ReasonerState") -> bool:
         logger.info("=== REFLECTION PHASE ===")
         logger.info(f"Reflecting on failed step: {current_step.text}")
         logger.info(f"Error message: {err_msg}")
@@ -495,27 +490,29 @@ class BulletPlanReasoner(BaseReasoner):
             
         current_step.reflection_attempts += 1
         
-        # Generic fallback - extract key action words
-        words = current_step.text.split()
-        # Filter for meaningful words (nouns, verbs) and take the first few
-        key_words = [w.strip('.,!?:;').lower() for w in words if len(w) > 3 and w.isalpha()][:4]
-        
-        if key_words:
-            revised_step = " ".join(key_words)
-        else:
-            revised_step = "general purpose tool"
-        
-        # Ensure single line and reasonable length
+        reflection_template = self._load_prompt("reflection_prompt")
+        prompt = reflection_template.format(
+            goal=state.goal,
+            failed_step_text=current_step.text,
+            error_message=err_msg,
+            history="\n".join(state.history)
+        )
+
+        logger.info("Calling LLM for reflection")
+        revised_step = self.llm.chat(messages=[{"role": "user", "content": prompt}]).strip()
+
+        if "AUTH_FAILURE" in revised_step:
+            logger.error("Reflection indicates an unrecoverable authentication failure.")
+            return False
+
         if revised_step:
-            revised_step = revised_step.strip().replace('\n', ' ')[:80]
-            
-            logger.info(f"Simplified step from '{current_step.text}' to '{revised_step}'")
+            logger.info(f"LLM revised step from '{current_step.text}' to '{revised_step}'")
             current_step.text = revised_step
             current_step.status = "pending"
             current_step.tool_id = None
             return True
         else:
-            logger.warning("Could not generate meaningful revision")
+            logger.warning("LLM reflection did not provide a revised step.")
             return False
 
     # 7. STEP CLASSIFICATION --------------------------------------------
@@ -696,7 +693,7 @@ class BulletPlanReasoner(BaseReasoner):
 
                 # Ask the LLM to repair / re-phrase the step
                 logger.info("Attempting to reflect and revise step")
-                if self.reflect(current_step, err_msg):
+                if self.reflect(current_step, err_msg, state):
                     logger.info("Step revised, will retry on next iteration. Un-marking plan as failed for now.")
                     state.failed = False # Allow the loop to continue for a retry
                 else:
