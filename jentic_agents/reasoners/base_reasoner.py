@@ -4,6 +4,13 @@ Abstract base class for reasoning loops that implement plan → select_tool → 
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
+import enum
+
+class StepType(enum.Enum):
+    """Category of a plan step used by reasoners to decide execution path."""
+
+    TOOL_USING = "tool-using"
+    REASONING = "reasoning"
 
 
 class ReasoningResult(BaseModel):

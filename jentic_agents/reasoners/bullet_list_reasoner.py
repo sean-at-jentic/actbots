@@ -46,6 +46,7 @@ from ..platform.jentic_client import JenticClient  # local wrapper, not the raw 
 from ..utils.llm import BaseLLM, LiteLLMChatLLM
 from ..memory.scratch_pad import ScratchPadMemory
 from ..utils.logger import get_logger
+from .base_reasoner import StepType
 
 # Initialize module logger using the shared logging utility
 logger = get_logger(__name__)
@@ -131,8 +132,22 @@ def parse_bullet_plan(markdown: str) -> deque[Step]:
         steps.append(step)
         logger.debug(f"Parsed step: text='{step.text}', goal_context='{step.goal_context}', store_key='{step.store_key}'")
 
-    logger.info(f"Parsed {len(steps)} steps from bullet plan")
-    return deque(steps)
+    # ------------------------------------------------------------------
+    # Skip container/meta bullets so we only execute leaf actions.
+    # A container is detected when the next bullet has a larger indent
+    # level than the current one.
+    leaf_steps: List[Step] = []
+    for idx, step in enumerate(steps):
+        next_indent = steps[idx + 1].indent if idx + 1 < len(steps) else step.indent
+        if next_indent > step.indent:
+            logger.debug(f"Skipping container step: '{step.text}'")
+            continue  # don't enqueue parent/meta bullets
+        leaf_steps.append(step)
+
+    logger.info(
+        f"Parsed {len(leaf_steps)} leaf steps from bullet plan (original {len(steps)})"
+    )
+    return deque(leaf_steps)
 
 
 # ---------------------------------------------------------------------------
@@ -163,17 +178,11 @@ class BulletPlanReasoner(BaseReasoner):
         Goal: 'Find an interesting nytimes article that came out recently'
 
         ```
-        - Find an appropriate api or workflow to use to achieve the goal ( goal: Find an interesting nytimes article that came out recently )
-          - Search jentic for a 'nytimes' api ( goal: Find an interesting nytimes article that came out recently )
-            -> if fails: Search jentic for a generic 'news' api.
-          - Load execution info for the api which best suits the goal ( goal: Find an interesting nytimes article that came out recently )
-            -> if fails: Try loading the next best tool from the search results.
-        - Execute the selected api operation or workflow -> store: nytimes_api_result ( goal: Find an interesting nytimes article that came out recently )
-          -> if fails: Report that the API call failed.
-        - From the results, decide on an interesting article -> store: interesting_article ( goal: Find an interesting nytimes article that came out recently )
-          -> if fails: Report that no articles were found.
-        - Extract the title, url, and summary from the article -> store: article_info ( goal: Find an interesting nytimes article that came out recently )
-        - Return the article information to the user ( goal: Find an interesting nytimes article that came out recently )
+        - Find recent news articles about 'artificial intelligence' -> store: search_results (goal: Find an interesting nytimes article that came out recently)
+          -> if fails: Report that the article search failed.
+        - From the search_results, identify the most interesting article -> store: interesting_article (goal: Find an interesting nytimes article that came out recently)
+          -> if fails: Report that no interesting articles were found.
+        - Return the article_info to the user (goal: Find an interesting nytimes article that came out recently)
         ```
 
         Real:
@@ -300,16 +309,24 @@ class BulletPlanReasoner(BaseReasoner):
             raise RuntimeError(f"No tool found for step: {plan_step.text}")
 
         logger.info("Found tool candidates:")
-        for i, hit in enumerate(hits):
-            hit_name = hit.get('name', hit.get('id', 'Unknown')) if isinstance(hit, dict) else getattr(hit, 'name', 'Unknown')
-            hit_desc = hit.get('description', '') if isinstance(hit, dict) else getattr(hit, 'description', '')
-            hit_id = hit.get('id', 'Unknown') if isinstance(hit, dict) else getattr(hit, 'id', 'Unknown')
-            logger.info(f"  {i+1}. {hit_name} (ID: {hit_id}) - {hit_desc}")
+        tool_lines_list = []
+        for i, h in enumerate(hits):
+            if isinstance(h, dict):
+                name = h.get('name', h.get('id', 'Unknown'))
+                api_name = h.get('api_name')
+                description = h.get('description', '')
+                hit_id = h.get('id', 'Unknown')
+            else:
+                name = getattr(h, 'name', 'Unknown')
+                api_name = getattr(h, 'api_name', None)
+                description = getattr(h, 'description', '')
+                hit_id = getattr(h, 'id', 'Unknown')
 
-        tool_lines = "\n".join([
-            f"{i+1}. {h.get('name', h.get('id', 'Unknown')) if isinstance(h, dict) else getattr(h, 'name', 'Unknown')} — {h.get('description', '') if isinstance(h, dict) else getattr(h, 'description', '')}"
-            for i, h in enumerate(hits)
-        ])
+            display_name = f"{name} ({api_name})" if api_name else name
+            logger.info(f"  {i+1}. {display_name} (ID: {hit_id}) - {description}")
+            tool_lines_list.append(f"{i+1}. {display_name} — {description}")
+        
+        tool_lines = "\n".join(tool_lines_list)
         
         # Include goal context in the selection prompt for better decision making
         goal_info = ""
@@ -393,43 +410,43 @@ Number:"""
             raise RuntimeError(f"Invalid tool index reply: {reply}")
 
     def _extract_search_keywords_with_ai(self, plan_step: Step, state: ReasonerState) -> str:
-        """Use an LLM to extract a generic, capability-focused search query."""
-        
+        """Use an LLM to rephrase a technical plan step into a high-quality,
+        capability-focused search query for the Jentic tool marketplace."""
+
         # Combine step text with goal context for a richer prompt
         context_text = plan_step.text
         if plan_step.goal_context:
-            context_text += f" (Overall Goal: {plan_step.goal_context})"
-        
-        keyword_prompt = f"""
-        You are an expert at identifying the core capability required to perform a given task.
-        From the task description below, extract a short, generic search query for a tool API.
-        The query should describe the action and the entity, but EXCLUDE specific names, IDs, or data.
+            context_text += f" (Context: This is part of a larger goal to '{plan_step.goal_context}')"
 
-        **Example 1:**
-        Task: "Identify the 'To Do' list with ID: 685d4a691a6d5ca063edb440 on the 'Project X' board"
-        Search Query: "Trello get board lists"
+        keyword_prompt = textwrap.dedent(f"""
+            You are an expert at rephrasing a technical developer task into a clear,
+            capability-focused search query for a tool marketplace. Your goal is to
+            generate a query that accurately describes the desired functionality.
 
-        **Example 2:**
-        Task: "Find the user with email 'test@example.com' in Salesforce"
-        Search Query: "Salesforce find user by email"
+            **Example 1:**
+            Task: "Search jentic for a 'nytimes' api to search for articles"
+            Search Query: "New York Times API for searching articles"
 
-        **Example 3:**
-        Task: "Create a new calendar event called 'Team Meeting' for tomorrow at 10am"
-        Search Query: "Google Calendar create event"
+            **Example 2:**
+            Task: "Search jentic for a 'Discord' api to post a message"
+            Search Query: "Discord API for posting messages"
 
-        **Example 4:**
-        Task: "Send a message to the #general channel on Slack saying 'hello world'"
-        Search Query: "Slack send channel message"
+            **Example 3:**
+            Task: "Find a tool to create a new lead in Salesforce"
+            Search Query: "Salesforce API for lead creation"
 
-        **Real Task:**
-        Task: "{context_text}"
+            **Real Task:**
+            Task: "{context_text}"
 
-        Search Query:"""
+            Search Query:""")
 
         logger.info("Calling LLM for keyword extraction")
         messages = [{"role": "user", "content": keyword_prompt}]
         keywords = self.llm.chat(messages=messages).strip()
-        
+
+        # Clean up the response, removing potential quotes
+        keywords = keywords.strip('"\'')
+
         logger.info(f"AI extracted keywords: '{keywords}'")
         return keywords
 
@@ -507,16 +524,24 @@ Number:"""
         current_step = state.plan[0]
         logger.info(f"Updating step: {current_step.text}")
         
-        current_step.result = observation
+        # Unpack tool results to store only the meaningful, serializable output.
+        # This prevents storing non-serializable objects like OperationResult in memory.
+        value_to_store = observation
+        if isinstance(observation, dict) and "result" in observation:
+            result_obj = observation.get("result")
+            if hasattr(result_obj, "output"):
+                logger.debug("Unpacking tool result object to store its output.")
+                value_to_store = result_obj.output
+
+        current_step.result = value_to_store
         current_step.status = "done"
         logger.debug(f"Step status updated to: {current_step.status}")
 
         if current_step.store_key:
             logger.info(f"Storing result in memory with key: {current_step.store_key}")
-            # Save into memory with a generic description
             self.memory.set(
                 key=current_step.store_key,
-                value=observation,
+                value=value_to_store,
                 description=f"Result from step '{current_step.text}'",
             )
             logger.debug(f"Memory updated with key '{current_step.store_key}'")
@@ -609,6 +634,117 @@ Number:"""
             logger.warning("Could not generate meaningful revision")
             return False
 
+    # 7. STEP CLASSIFICATION --------------------------------------------
+    def _classify_step(self, step: Step, state: ReasonerState) -> StepType:
+        """Classify a plan step as TOOL_USING or REASONING via a lightweight LLM prompt.
+
+        The prompt is intentionally minimal to control token cost and reduce
+        hallucination risk.  If the LLM response is not recognised, we fall
+        back to TOOL_USING to keep the agent progressing.
+        """
+        logger.info("Classifying step: '%s'", step.text)
+
+        # Summarise memory keys only (avoid dumping large payloads).
+        mem_keys: List[str] = []
+        if hasattr(self.memory, "keys"):
+            try:
+                mem_keys = list(self.memory.keys())  # type: ignore[arg-type]
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Could not list memory keys: %s", exc)
+        context_summary = (
+            "Memory keys: " + ", ".join(mem_keys) if mem_keys else "Memory is empty."
+        )
+
+        prompt = (
+            "You are a classifier that decides whether a plan step needs an external "
+            "API/tool (`tool-using`) or can be solved by internal reasoning over the "
+            "already-available data (`reasoning`).\n\n"
+            f"Context: {context_summary}\n"
+            f"Step: '{step.text}'\n\n"
+            "Reply with exactly 'tool-using' or 'reasoning'."
+        )
+
+        try:
+            reply = (
+                self.llm.chat(messages=[{"role": "user", "content": prompt}])
+                .strip()
+                .lower()
+            )
+            logger.debug("Classifier reply: %s", reply)
+            if "reason" in reply:
+                return StepType.REASONING
+            if "tool" in reply:
+                return StepType.TOOL_USING
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("LLM classification error: %s", exc)
+
+        # Default/fallback
+        logger.info("Falling back to TOOL_USING classification")
+        return StepType.TOOL_USING
+
+    # 8. EXECUTE REASONING STEP ----------------------------------------
+    def _execute_reasoning_step(self, step: Step, state: ReasonerState) -> Any:
+        """Run an internal-reasoning step via the LLM.
+
+        The prompt receives a *compact* JSON view of memory to keep context
+        size under control.  The LLM should output ONLY the result (no
+        explanatory text).  We make a best-effort attempt to parse JSON if it
+        looks like JSON; otherwise we return the raw string.
+        """
+        logger.info("Executing reasoning step: '%s'", step.text)
+
+        # Build a JSON payload of *relevant* memory keys.
+        # 1. Explicitly include any key that appears in the step text (e.g. "search_results").
+        # 2. For other keys, include only a truncated preview to keep token usage reasonable.
+        mem_payload: Dict[str, Any] = {}
+        referenced_keys = {k for k in getattr(self.memory, 'keys', lambda: [])() if k in step.text}
+
+        try:
+            all_keys = self.memory.keys()
+            for k in all_keys:
+                v = self.memory.retrieve(k)
+                if k in referenced_keys:
+                    # Include full value (may still be large JSON)
+                    mem_payload[k] = v
+                else:
+                    # Provide short preview for context only
+                    if isinstance(v, str):
+                        mem_payload[k] = v[:200] + ("…" if len(v) > 200 else "")
+                    else:
+                        mem_payload[k] = v  # non-string values are usually small JSON anyway
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Could not build memory payload: %s", exc)
+
+        prompt = (
+            "You are performing an internal reasoning step as part of a larger "
+            "multi-step plan.\n\n"
+            "Step to perform: {step}\n\n"
+            "Memory (JSON):\n{mem}\n\n"
+            "Return ONLY the direct result that should be stored or used for the "
+            "next steps.  If the result is structured, reply with valid JSON.".format(
+                step=step.text, mem=json.dumps(mem_payload, indent=2)
+            )
+        )
+
+        try:
+            reply = self.llm.chat(messages=[{"role": "user", "content": prompt}]).strip()
+            logger.debug("Reasoning LLM reply: %s", reply)
+
+            # Attempt to parse JSON result if present. If successful, resolve
+            # placeholders within the structure. Otherwise, resolve on the raw string.
+            if reply.startswith("{") and reply.endswith("}"):
+                try:
+                    parsed_json = json.loads(reply)
+                    return self._resolve_placeholders(parsed_json)
+                except json.JSONDecodeError:
+                    # Not valid JSON, fall through to treat as a raw string
+                    pass
+        
+            return self._resolve_placeholders(reply)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Reasoning step failed: %s", exc)
+            return f"Error during reasoning: {exc}"
+
     # ------------------------------------------------------------------
     # REQUIRED PUBLIC API (BaseReasoner)
     # ------------------------------------------------------------------
@@ -649,20 +785,25 @@ Number:"""
             current_step = state.plan[0]
             logger.info(f"Executing step: {current_step.text}")
 
-            try:
-                tool_id = self.select_tool(current_step, state)
-                logger.info(f"Selected tool: {tool_id}")
-                
-                result = self.act(tool_id, state)
-                logger.info(f"Action completed with result type: {type(result)}")
+            step_type = self._classify_step(current_step, state)
+            logger.info(f"Step classified as: {step_type.value}")
 
-                tool_call_record = {
-                    "tool_id": tool_id,
-                    "step": current_step.text,
-                    "result": result,
-                }
-                tool_calls.append(tool_call_record)
-                logger.debug(f"Recorded tool call: {tool_call_record}")
+            try:
+                if step_type is StepType.TOOL_USING:
+                    tool_id = self.select_tool(current_step, state)
+                    logger.info(f"Selected tool: {tool_id}")
+
+                    result = self.act(tool_id, state)
+                    logger.info(f"Action completed with result type: {type(result)}")
+
+                    tool_calls.append({
+                        "tool_id": tool_id,
+                        "step": current_step.text,
+                        "result": result,
+                    })
+                else:
+                    result = self._execute_reasoning_step(current_step, state)
+                    logger.info("Reasoning step output produced")
 
                 self.observe(result, state)
                 logger.info("Observation phase completed")

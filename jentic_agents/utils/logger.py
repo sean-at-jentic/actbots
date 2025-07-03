@@ -83,6 +83,7 @@ class LoggerSingleton:
             file_handler.setLevel(file_level)
             
             file_format = file_cfg.get('format', '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            # Use a standard formatter for the file to avoid color codes
             file_handler.setFormatter(logging.Formatter(file_format))
             
             logging.getLogger().addHandler(file_handler)
