@@ -51,6 +51,7 @@ Thumbs.db
 .gitignore
 .uv/
 uv.lock 
+jentic_agents/data
 
 # Log files
 *.log
