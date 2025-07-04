@@ -11,15 +11,12 @@
   ],
   "examples": [
     {
-      "task": "Search jentic for a 'nytimes' api to search for articles",
       "output": "New York Times API for searching articles"
     },
     {
-      "task": "Search jentic for a 'Discord' api to post a message",
       "output": "Discord API for posting messages"
     },
     {
-      "task": "Find a tool to create a new lead in Salesforce",
       "output": "Salesforce API for lead creation"
     }
   ]

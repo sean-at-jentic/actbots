@@ -42,6 +42,9 @@ from jentic_agents.utils.llm import LiteLLMChatLLM
 # Prefix to detect Gemini provider
 _GEMINI_PREFIX = "gemini/"
 
+logging.getLogger("litellm").setLevel(logging.WARNING)
+logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+
 def main():
     """Run the live demo."""
     # Load environment variables from .env file

@@ -13,6 +13,7 @@
     "When memory contains structured data, extract concrete values instead of using placeholders whenever possible.",
     "Use ${{memory.<key>}} placeholders ONLY for values explicitly available in memory that cannot be extracted.",
     "If a required parameter cannot be determined, use a descriptive placeholder.",
+    "If a field is not marked as required in the schema, it might still need to be included for the tool to function correctly. For example, an API might expect a 'body' or 'content' field even if it is not listed as required.",
     "Do not output markdown formatting or code fences.",
     "Authentication credentials will be automatically injected by Jentic" ]
 }

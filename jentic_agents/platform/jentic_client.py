@@ -41,7 +41,7 @@ class JenticClient:
 
             self._sdk_models = importlib.import_module("jentic.models")
 
-            logger.info("JenticClient initialised with REAL Jentic services (async SDK detected).")
+            logger.info("JenticClient initialized with Jentic services.")
 
         except ImportError as exc:
             logger.error("The 'jentic' SDK could not be imported – ensure it is installed and available in the current environment.")
@@ -83,7 +83,7 @@ class JenticClient:
         """
         Search for workflows and operations matching a query. Caches metadata for later use.
         """
-        logger.info(f"Searching for tools matching query: '{query}' (top_k={top_k})")
+        logger.info(f"Searching for tools: '{query}' (top {top_k})")
 
         # Build request model for the SDK.
         RequestModel = getattr(self._sdk_models, "ApiCapabilitySearchRequest")
@@ -134,7 +134,7 @@ class JenticClient:
         Load the detailed definition for a specific tool by its ID.
         Uses cached metadata to determine if it's a workflow or operation.
         """
-        logger.info(f"Loading tool definition for ID: {tool_id}")
+        logger.info(f"Loading tool definition for: {tool_id}")
 
         tool_meta = self._tool_metadata_cache.get(tool_id)
         if not tool_meta:
@@ -196,7 +196,7 @@ class JenticClient:
         """
         Execute a tool with given parameters. Uses cached metadata to determine execution type.
         """
-        logger.info(f"Executing tool '{tool_id}' with params: {params}")
+        logger.info(f"Executing tool: {tool_id}")
         
         tool_meta = self._tool_metadata_cache.get(tool_id)
         if not tool_meta:

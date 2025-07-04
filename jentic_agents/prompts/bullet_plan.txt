@@ -1,28 +1,43 @@
 {
-  "instruction": "Generate a multi-step, tool-based action plan to accomplish the given goal.",
+  "instruction": "Generate a concrete, API-centric multi-step plan to accomplish the given goal using Jentic tools (search_apis, load_execution_info, execute, etc.). Your plan should assume the agent has access to Jentic's unified API hub where it can discover and run operations from many providers.",
+
+  "context": "Jentic workflow: 1) search_apis → 2) load_execution_info → 3) execute. The agent can chain multiple APIs across different vendors. Use already-known IDs (e.g., channel_id, guild_id) directly; only add discovery steps when information is missing.",
+
   "inputs": {
     "goal": "{goal}"
   },
+
   "rules": [
+    "Wrap the entire bullet list in triple back-ticks (```)",
     "Return a bullet list of steps, each starting with '- '",
-    "If data is fetched, add '-> store: <key>'",
-    "NEVER mention login/auth steps",
-    "Wrap the bullet list in triple back-ticks (```)",
-    "Be concrete and include the target object and purpose",
-    "If a step fetches or retrieves data, you MUST include a '-> store: <key>' directive. The next step should then use that key to process the data, not fetch it again.",
-    "For steps that might fail (e.g., finding an item), add a sub-bullet with a backup plan starting with '-> if fails:'",
-    "Do not mention any specific external tool names",
-    "Always append the goal to the end of each step"
+    "If a step calls a tool and returns data needed later, append '-> store: <key>'",
+    "If the goal already supplies required identifiers (IDs, URLs, etc.), DO NOT add extra lookup/fetch steps for them.",
+    "If required data is missing, add a step to search for or retrieve it first.",
+    "Never mention login/auth steps or specific tool IDs; describe the action generically (e.g., 'Search Jentic for a Discord send-message operation').",
+    "Add a sub-bullet starting with '-> if fails:' whenever a step may fail, giving a fallback or retry suggestion.",
+    "Be explicit about the target object and purpose in each step (e.g., include the channel_id when sending a message).",
+    "Always append the full goal in parentheses at the end of each step.",
+    "Use multiple APIs if necessary to reach the goal, but avoid redundant operations."
   ],
+
   "examples": [
     {
-      "goal": "Find an interesting nytimes article that came out recently about AI",
+      "goal": "Send \"hello\" to channel 123456789 in workspace 987654321",
       "output": {
-        "step_1": {"text": "- Find recent news articles about 'artificial intelligence' -> store: search_results (goal: Find an interesting nytimes article that came out recently about AI)"},
-        "backup_1": {"text": "  -> if fails: Try a different nytimes API endpoint or adjust the search query for recent articles."},
-        "step_2": {"text": "- From the search_results, identify the most interesting article -> store: interesting_article (goal: Find an interesting nytimes article that came out recently about AI)"},
-        "backup_2": {"text": "  -> if fails: Try extracting the most interesting article using a different selection method or fallback to a default article."},
-        "step_3": {"text": "- Return the article_info to the user (goal: Find an interesting nytimes article that came out recently about AI)"}
+        "step_1": {"text": "- Search Jentic for an operation that sends a message to a specific channel -> store: send_op (goal: Send \"hello\" to channel 123456789 in workspace 987654321)"},
+        "backup_1": {"text": "  -> if fails: Broaden the search query or adjust keywords (e.g., 'send message', 'post to channel')."},
+        "step_2": {"text": "- Execute send_op with channel_id=123456789, content=\"hello\" (goal: Send \"hello\" to channel 123456789 in workspace 987654321)"}
+      }
+    },
+    {
+      "goal": "Post \"weekly report\" in a channel called #status-updates",
+      "output": {
+        "step_1": {"text": "- Search Jentic for an operation that lists channels in the workspace -> store: channels (goal: Post \"weekly report\" in a channel called #status-updates)"},
+        "backup_1": {"text": "  -> if fails: Adjust the search query or check if the messaging API is enabled."},
+        "step_2": {"text": "- From channels, find the channel_id for #status-updates -> store: target_channel (goal: Post \"weekly report\" in a channel called #status-updates)"},
+        "backup_2": {"text": "  -> if fails: Use a fuzzy name search or ask the user to confirm the channel name."},
+        "step_3": {"text": "- Search Jentic for an operation that sends a message to a channel -> store: send_op (goal: Post \"weekly report\" in a channel called #status-updates)"},
+        "step_4": {"text": "- Execute send_op with channel_id={{target_channel.id}}, text=\"weekly report\" (goal: Post \"weekly report\" in a channel called #status-updates)"}
       }
     }
   ]

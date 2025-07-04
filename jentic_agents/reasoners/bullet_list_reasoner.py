@@ -148,7 +148,7 @@ def parse_bullet_plan(markdown: str) -> deque[Step]:
         leaf_steps.append(step)
 
     logger.info(
-        f"Parsed {len(leaf_steps)} leaf steps from bullet plan (original {len(steps)})"
+        f"Parsed {len(leaf_steps)} steps from plan (original {len(steps)})"
     )
     return deque(leaf_steps)
 
@@ -181,13 +181,27 @@ class BulletPlanReasoner(BaseReasoner):
     # -------------------------------------------------------------------
 
     def _build_search_query(self, step: "Step") -> str:
-        """Turn a plan step into a concise capability search query."""
-        text = step.text.lower()
-        text = re.sub(r"[\"'`]", "", text)  # strip quotes
-        tokens = [t for t in re.split(r"\W+", text) if t]
-        stop = {"the", "a", "an", "to", "in", "on", "for", "with", "of", "and"}
-        tokens = [t for t in tokens if t not in stop]
-        return " ".join(tokens[:8])  # keep first few meaningful words
+        """
+        Turn a plan step into an API-hub search query using the LLM-based keyword-extraction prompt only.
+        If the LLM fails, raise an error.
+        """
+        try:
+            kw_template = self._load_prompt("keyword_extraction")
+            if isinstance(kw_template, dict):
+                kw_template["inputs"]["context_text"] = step.text
+                prompt = json.dumps(kw_template, ensure_ascii=False)
+            else:
+                prompt = kw_template.format(context_text=step.text)
+
+            reply = self.llm.chat([{"role": "user", "content": prompt}]).strip()
+            if reply:
+                logger.info("LLM keyword-extraction produced query: %s", reply)
+                return reply
+            else:
+                raise RuntimeError("LLM keyword-extraction returned empty query.")
+        except Exception as e:
+            logger.error(f"Keyword-extraction prompt failed: {e}")
+            raise RuntimeError(f"Keyword-extraction prompt failed: {e}")
 
     def _select_tool_with_llm(
         self, step: "Step", hits: List[Dict[str, Any]], state: "ReasonerState"
@@ -199,12 +213,23 @@ class BulletPlanReasoner(BaseReasoner):
             return None
 
         # Format the list of tools for the LLM prompt.
-        candidate_prompt = "\n".join(
-            [
-                f"{idx + 1}. ID: {tool['id']}, Name: {tool['name']}, Description: {tool['description']}"
-                for idx, tool in enumerate(hits)
-            ]
-        )
+        tool_lines_list = []
+        for i, h in enumerate(hits):
+            if isinstance(h, dict):
+                name = h.get('name', h.get('id', 'Unknown'))
+                api_name = h.get('api_name')
+                description = h.get('description', '')
+                hit_id = h.get('id', 'Unknown')
+            else:
+                name = getattr(h, 'name', 'Unknown')
+                api_name = getattr(h, 'api_name', None)
+                description = getattr(h, 'description', '')
+                hit_id = getattr(h, 'id', 'Unknown')
+
+            display_name = f"{name} ({api_name})" if api_name else name
+            tool_lines_list.append(f"{i+1}. {display_name} — {description}")
+        
+        candidate_prompt = "\n".join(tool_lines_list)
         
         select_tool_template = self._load_prompt("select_tool")
         if isinstance(select_tool_template, dict):
@@ -325,20 +350,22 @@ class BulletPlanReasoner(BaseReasoner):
         logger.info(f"Selecting tool for step: {plan_step.text}")
 
         search_query = self._build_search_query(plan_step)
-        logger.info(f"Heuristic search query: {search_query}")
+        logger.info(f"Search query: {search_query}")
         search_hits = self.jentic.search(search_query, top_k=self.search_top_k)
 
         if not search_hits:
+            logger.error(f"No tools found for query: '{search_query}'")
             raise RuntimeError(f"No tools found for query: '{search_query}'")
 
         logger.info(f"Jentic search returned {len(search_hits)} results")
+        # Log only the most relevant tool candidate info
+        for idx, tool in enumerate(search_hits, 1):
+            logger.info(f"Tool Candidate {idx}: Name={tool.get('name')}, Description={tool.get('description')}")
 
         # Use the LLM to choose the best tool from the search results.
         tool_id = self._select_tool_with_llm(plan_step, search_hits, state)
         
         if not tool_id:
-            # This can happen if the LLM fails to choose or returns an invalid format.
-            # As a fallback, we can take the first result.
             logger.warning("LLM tool selection failed. Falling back to the first search hit.")
             tool_id = search_hits[0]['id']
 
@@ -349,20 +376,24 @@ class BulletPlanReasoner(BaseReasoner):
     def act(self, tool_id: str, state: ReasonerState):
         logger.info("=== ACTION PHASE ===")
         logger.info(f"Executing action with tool_id: {tool_id}")
-        
+
+        # If the tool_id is a memory key (e.g., 'send_op'), resolve it to the actual tool_id
+        if tool_id in self.memory.keys():
+            stored = self.memory.retrieve(tool_id)
+            # If stored is a dict with an 'id' field, use that
+            if isinstance(stored, dict) and 'id' in stored:
+                logger.info(f"Resolved memory key '{tool_id}' to tool_id: {stored['id']}")
+                tool_id = stored['id']
+            else:
+                logger.warning(f"Memory key '{tool_id}' did not resolve to a valid tool_id. Using as-is.")
+
         logger.info("Loading tool information from Jentic")
         tool_info = self.jentic.load(tool_id)
         logger.debug(f"Tool info: {tool_info}")
-        
-        # Use tool info directly without filtering credentials
-        # Jentic platform should handle credential injection automatically
-        if isinstance(tool_info, dict):
-            tool_schema = tool_info
-        elif hasattr(tool_info, 'schema_summary') and isinstance(tool_info.schema_summary, dict):
-            tool_schema = tool_info.schema_summary
-        else:
-            tool_schema = str(tool_info)
-        logger.debug(f"Tool schema: {tool_schema}")
+
+        # Extract required fields if present
+        required_fields = tool_info.get('required', []) if isinstance(tool_info, dict) else []
+        logger.debug(f"Tool schema for parameter generation: {tool_info}")
 
         logger.info("Enumerating memory for prompt")
         memory_enum = self.memory.enumerate_for_prompt()
@@ -373,7 +404,7 @@ class BulletPlanReasoner(BaseReasoner):
             return text.replace('{', '{{').replace('}', '}}')
 
         # Convert tool schema to string for formatting if it's a dict
-        tool_schema_str = str(tool_schema) if isinstance(tool_schema, dict) else tool_schema
+        tool_schema_str = str(tool_info) if isinstance(tool_info, dict) else tool_info
 
         param_generation_template = self._load_prompt("param_generation")
         if isinstance(param_generation_template, dict):
@@ -390,7 +421,7 @@ class BulletPlanReasoner(BaseReasoner):
                 goal=state.goal,
             )
         logger.debug(f"Parameter generation prompt:\n{prompt}")
-        
+
         messages = [{"role": "user", "content": prompt}]
         logger.info("Calling LLM for parameter generation")
         args_json = self.llm.chat(messages=messages)
@@ -405,14 +436,43 @@ class BulletPlanReasoner(BaseReasoner):
             logger.error(f"Raw args_json: {args_json}")
             raise RuntimeError(f"LLM produced invalid JSON args: {e}\n{args_json}")
 
+        # Check for missing required fields and re-prompt if needed
+        missing_fields = [field for field in required_fields if field not in args]
+        if missing_fields:
+            logger.warning(f"Missing required fields in LLM output: {missing_fields}. Re-prompting LLM.")
+            # Add explicit instruction to include all required fields
+            explicit_prompt = (
+                f"{prompt}\n\nIMPORTANT: You MUST include all required fields in the parameters: {', '.join(required_fields)}."
+            )
+            messages = [{"role": "user", "content": explicit_prompt}]
+            args_json = self.llm.chat(messages=messages)
+            logger.info(f"LLM parameter response (re-prompt):\n{args_json}")
+            try:
+                args: Dict[str, Any] = self._safe_json_loads(args_json)
+                logger.debug(f"Parsed args after re-prompt: {args}")
+            except ValueError as e:
+                logger.error(f"Failed to parse JSON args after re-prompt: {e}")
+                logger.error(f"Raw args_json: {args_json}")
+                raise RuntimeError(f"LLM produced invalid JSON args after re-prompt: {e}\n{args_json}")
+
         # Host‑side memory placeholder substitution (simple impl)
         logger.info("Resolving memory placeholders")
         concrete_args = self._resolve_placeholders(args)
         logger.debug(f"Concrete args after placeholder resolution: {concrete_args}")
 
-        logger.info(f"Executing tool {tool_id} with args: {concrete_args}")
+        logger.info(f"Executing tool {tool_id} with selected arguments.")
         result = self.jentic.execute(tool_id, concrete_args)
-        logger.info(f"Tool execution result: {result}")
+        # Support both dict and OperationResult
+        success = None
+        if isinstance(result, dict):
+            inner = result.get('result', None)
+            if hasattr(inner, 'success'):
+                success = getattr(inner, 'success', None)
+            elif isinstance(inner, dict):
+                success = inner.get('success', None)
+        elif hasattr(result, 'success'):
+            success = getattr(result, 'success', None)
+        logger.info(f"Tool execution completed. Success: {success}")
         return result
 
     # 4. OBSERVE --------------------------------------------------------
@@ -499,14 +559,11 @@ class BulletPlanReasoner(BaseReasoner):
         logger.info("=== EVALUATION PHASE ===")
         is_complete = (not state.plan) and (not state.failed)
         logger.info(
-            "Plan complete: %s (remaining steps: %s, failed: %s)",
-            is_complete,
-            len(state.plan),
-            state.failed,
+            f"Plan complete: {is_complete} | Remaining steps: {len(state.plan)} | Failed: {state.failed}"
         )
 
         if is_complete:
-            logger.info("All steps completed successfully!")
+            logger.info("All steps completed successfully.")
         elif state.failed:
             logger.warning("Plan has failed steps; cannot mark goal as complete.")
         else:
@@ -519,10 +576,7 @@ class BulletPlanReasoner(BaseReasoner):
 
     # 6. REFLECT (optional) --------------------------------------------
     def reflect(self, current_step: Step, err_msg: str, state: "ReasonerState") -> bool:
-        logger.info("=== REFLECTION PHASE ===")
-        logger.info(f"Reflecting on failed step: {current_step.text}")
-        logger.info(f"Error message: {err_msg}")
-        logger.info(f"Reflection attempts so far: {current_step.reflection_attempts}")
+        logger.info(f"Reflecting on failed step: {current_step.text} | Error: {err_msg} | Attempts: {current_step.reflection_attempts}")
         
         # Limit reflection attempts to prevent infinite loops
         if current_step.reflection_attempts >= MAX_REFLECTION_ATTEMPTS:
@@ -671,9 +725,7 @@ class BulletPlanReasoner(BaseReasoner):
 
     def run(self, goal: str, max_iterations: int = 10):  # type: ignore[override]
         """Execute the reasoning loop until all plan steps are done or iteration cap reached."""
-        logger.info("=== STARTING REASONING LOOP ===")
-        logger.info(f"Goal: {goal}")
-        logger.info(f"Max iterations: {max_iterations}")
+        logger.info(f"Reasoning started for goal: {goal} | Max iterations: {max_iterations}")
         
         from .base_reasoner import ReasoningResult  # local import to avoid circular
 
@@ -682,7 +734,7 @@ class BulletPlanReasoner(BaseReasoner):
 
         iteration = 0
         while iteration < max_iterations:
-            logger.info(f"=== ITERATION {iteration + 1}/{max_iterations} ===")
+            logger.info(f"Iteration {iteration + 1}/{max_iterations}")
 
             # If the plan failed in a previous iteration, and reflection didn't fix it, stop.
             if state.failed:
@@ -696,12 +748,12 @@ class BulletPlanReasoner(BaseReasoner):
             
             # Ensure we have at least one step planned.
             if iteration == 0 and not state.plan:
-                logger.info("Generating initial plan")
+                logger.info("Generating plan for goal.")
                 self.plan(state)
             
             # If the plan is empty, we are done.
             if not state.plan:
-                logger.info("Plan is empty. Goal is considered complete.")
+                logger.info("Plan empty. Marking goal as complete.")
                 state.goal_completed = True
                 break
 
@@ -716,15 +768,15 @@ class BulletPlanReasoner(BaseReasoner):
             logger.info(f"Executing step: {current_step.text}")
 
             step_type = self._classify_step(current_step, state)
-            logger.info(f"Step classified as: {step_type.value}")
+            logger.info(f"Step type: {step_type.value}")
 
             try:
                 if step_type is StepType.TOOL_USING:
                     tool_id = self.select_tool(current_step, state)
-                    logger.info(f"Selected tool: {tool_id}")
+                    logger.info(f"Tool selected: {tool_id}")
 
                     result = self.act(tool_id, state)
-                    logger.info(f"Action completed with result type: {type(result)}")
+                    logger.info(f"Action result type: {type(result)}")
 
                     tool_calls.append({
                         "tool_id": tool_id,
@@ -733,48 +785,36 @@ class BulletPlanReasoner(BaseReasoner):
                     })
                 else:
                     result = self._execute_reasoning_step(current_step, state)
-                    logger.info("Reasoning step output produced")
+                    logger.info("Reasoning step completed.")
 
                 self.observe(result, state)
-                logger.info("Observation phase completed")
                 
             except Exception as e:  # noqa: BLE001
-                logger.error(f"Step execution failed with an exception: {e}")
-                logger.exception("Full exception details:")
-                
-                err_msg = str(e)
-                state.history.append(f"Step failed: {err_msg}")
-                current_step.status = "failed"
-                state.failed = True # Mark plan as failed
-
-                # Ask the LLM to repair / re-phrase the step
-                logger.info("Attempting to reflect and revise step")
-                if self.reflect(current_step, err_msg, state):
-                    logger.info("Step revised, will retry on next iteration. Un-marking plan as failed for now.")
-                    state.failed = False # Allow the loop to continue for a retry
+                logger.error(f"Step execution failed: {e}")
+                logger.info("Attempting reflection on failed step.")
+                if self.reflect(current_step, str(e), state):
+                    logger.info("Step revised, retrying.")
+                    state.failed = False
                 else:
-                    # If reflection returns False we give up on this step.
-                    logger.warning("Reflection failed. The plan will now terminate.")
+                    logger.warning("Reflection failed. Ending reasoning loop.")
 
 
             iteration += 1
-            logger.info(f"Iteration {iteration} completed")
-
-        logger.info("=== REASONING LOOP COMPLETE ===")
-        success = state.goal_completed or self.evaluate(state)
-        logger.info(f"Final success status: {success} (goal_completed: {state.goal_completed})")
-        logger.info(f"Total tool calls made: {len(tool_calls)}")
-        logger.info(f"Final history: {state.history}")
-
-        final_answer = "Goal completed." if success else "Unable to complete goal within iteration limit."
+        logger.info(f"Reasoning loop complete. Success: {state.goal_completed or not state.failed}")
+        logger.info(f"Total tool calls: {len(tool_calls)}")
+        final_answer = "Goal completed." if state.goal_completed else "Unable to complete goal."
         logger.info(f"Final answer: {final_answer}")
-
+        if state.goal_completed:
+            tool_summary = "\n  Used tool(s):\n" + "\n".join([
+                f"    {call['tool_id']} — {call['step']}" for call in tool_calls
+            ])
+            logger.info(f"\n✅ Goal Completed Successfully\n{final_answer}\n{tool_summary}")
         result = ReasoningResult(
             final_answer=final_answer,
             iterations=len(tool_calls),
             tool_calls=tool_calls,
-            success=success,
-            error_message=None if success else "Max iterations reached or failure during steps",
+            success=state.goal_completed,
+            error_message=None if state.goal_completed else "Max iterations reached or failure during steps",
         )
         logger.info(f"Returning result: {result}")
         return result
