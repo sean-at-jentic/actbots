@@ -31,7 +31,8 @@ from dotenv import load_dotenv
 sys.path.insert(0, os.path.dirname(__file__))
 
 from jentic_agents.agents.interactive_cli_agent import InteractiveCLIAgent
-from jentic_agents.inbox.cli_inbox import CLIInbox
+from jentic_agents.communication.inbox.cli_inbox import CLIInbox
+from jentic_agents.communication.hitl.cli_intervention_hub import CLIInterventionHub
 from jentic_agents.memory.scratch_pad import ScratchPadMemory
 from jentic_agents.platform.jentic_client import JenticClient
 from jentic_agents.reasoners.bullet_list_reasoner import BulletPlanReasoner
@@ -89,10 +90,14 @@ def main():
         llm_wrapper = LiteLLMChatLLM(model=model_name)
         memory = ScratchPadMemory()
 
+        # Initialize the CLI intervention hub for human-in-the-loop
+        escalation_hub = CLIInterventionHub()
+
         reasoner = BulletPlanReasoner(
             jentic=jentic_client,
             memory=memory,
             llm=llm_wrapper,
+            escalation=escalation_hub,
         )
 
         # 3. Initialize Memory and Inbox

@@ -3,7 +3,7 @@ Unit tests for inbox implementations.
 """
 from io import StringIO
 from unittest.mock import patch
-from ..inbox.cli_inbox import CLIInbox
+from ..communication.inbox.cli_inbox import CLIInbox
 
 
 class TestCLIInbox:

@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 from ..agents.interactive_cli_agent import InteractiveCLIAgent
 from ..reasoners.base_reasoner import ReasoningResult
 from ..memory.scratch_pad import ScratchPadMemory
-from ..inbox.cli_inbox import CLIInbox
+from ..communication.inbox.cli_inbox import CLIInbox
 from ..platform.jentic_client import JenticClient
 
 

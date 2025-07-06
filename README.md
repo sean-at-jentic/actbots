@@ -59,15 +59,28 @@ make lint
 
 ```python
 from jentic_agents.platform.jentic_client import JenticClient
-from jentic_agents.reasoners.standard_reasoner import StandardReasoner
+from jentic_agents.reasoners.bullet_list_reasoner import BulletPlanReasoner
 from jentic_agents.memory.scratch_pad import ScratchPadMemory
-from jentic_agents.inbox.cli_inbox import CLIInbox
+from jentic_agents.communication.inbox.cli_inbox import CLIInbox
+from jentic_agents.communication.escalation import CLIEscalation
 from jentic_agents.agents.interactive_cli_agent import InteractiveCLIAgent
+from jentic_agents.utils.llm import LiteLLMChatLLM
 
 # Create components
 jentic_client = JenticClient(api_key="your-key-here")
-reasoner = StandardReasoner(jentic_client=jentic_client)
 memory = ScratchPadMemory()
+llm = LiteLLMChatLLM(model="gpt-4o")
+
+# Add escalation system for human help
+escalation = CLIEscalation()
+
+reasoner = BulletPlanReasoner(
+    jentic=jentic_client,
+    memory=memory,
+    llm=llm,
+    escalation=escalation  # Agent can choose to escalate
+)
+
 inbox = CLIInbox()
 
 # Create and run agent
@@ -118,6 +131,16 @@ Goal delivery systems that feed tasks to agents:
 
 - **BaseInbox**: Stream interface for goals from various sources
 - **CLIInbox**: Interactive command-line goal input
+
+### Escalation
+
+Simple human-in-the-loop system where agents choose when to escalate:
+
+- **BaseEscalation**: Simple interface for requesting human help
+- **CLIEscalation**: CLI-based human escalation
+- **NoEscalation**: Null implementation for autonomous operation
+
+See [Escalation System Documentation](docs/escalation_system.md) for details.
 
 ### Platform
 
@@ -194,6 +217,13 @@ AI Agent started. Type 'quit' to exit.
 📋 **Used 1 tool(s) in 2 iteration(s):**
   1. Echo Tool
 ```
+
+## ⚠️ Deprecated Features
+
+### Human-in-the-Loop (HITL) System
+The complex HITL system with automatic triggers has been deprecated in favor of the simpler **Escalation System**. The HITL components (inbox, outbox, intervention hub) are still available but not recommended for new projects.
+
+**Migration**: Replace automatic HITL triggers with agent-chosen escalation using `CLIEscalation`.
 
 ## 🔮 Future Enhancements
 

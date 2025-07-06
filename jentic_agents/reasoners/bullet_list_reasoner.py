@@ -49,6 +49,7 @@ from ..utils.llm import BaseLLM, LiteLLMChatLLM
 from ..memory.scratch_pad import ScratchPadMemory
 from ..utils.logger import get_logger
 from .base_reasoner import StepType
+from ..communication.hitl.base_intervention_hub import BaseInterventionHub, NoEscalation
 
 # Initialize module logger using the shared logging utility
 logger = get_logger(__name__)
@@ -57,8 +58,7 @@ logger = get_logger(__name__)
 # Module-level constants
 # ---------------------------------------------------------------------------
 
-# Maximum number of self-healing attempts for a single plan step.
-MAX_REFLECTION_ATTEMPTS = 2
+# Remove automatic retry limits - let the agent choose when to escalate
 
 # ---------------------------------------------------------------------------
 # Helper data models
@@ -80,6 +80,7 @@ class Step:
     status: str = "pending"  # pending | running | done | failed
     result: Any = None
     tool_id: Optional[str] = None  # chosen Jentic tool
+    params: Optional[Dict[str, Any]] = None  # chosen Jentic tool parameters
     reflection_attempts: int = 0  # track how many times we've tried to fix this step
 
 
@@ -180,6 +181,7 @@ class BulletPlanReasoner(BaseReasoner):
         model: str = "gpt-4o",
         max_iters: int = 20,
         search_top_k: int = 15,
+        escalation: Optional[BaseInterventionHub] = None,
     ) -> None:
         logger.info(f"Initializing BulletPlanReasoner with model={model}, max_iters={max_iters}, search_top_k={search_top_k}")
         super().__init__()
@@ -188,7 +190,74 @@ class BulletPlanReasoner(BaseReasoner):
         self.llm = llm or LiteLLMChatLLM(model=model)
         self.max_iters = max_iters
         self.search_top_k = search_top_k
+        self.escalation = escalation or NoEscalation()
         logger.info("BulletPlanReasoner initialization complete")
+
+    # ------------------------------------------------------------------
+    # Universal escalation helpers
+    # ------------------------------------------------------------------
+
+    def _process_llm_response_for_escalation(self, response: str, context: str = "") -> str:
+        """
+        Check if LLM response contains escalation request and handle it.
+        
+        Returns:
+            Processed response (either original or human response if escalation occurred)
+        """
+        response = response.strip()
+        
+        # Check for escalation patterns
+        escalation_patterns = [
+            r"^HUMAN:\s*(.+)",
+            r"^ASK_HUMAN:\s*(.+)", 
+            r"^ESCALATE:\s*(.+)",
+            r"^NEED_HELP:\s*(.+)"
+        ]
+        
+        for pattern in escalation_patterns:
+            match = re.match(pattern, response, re.DOTALL)
+            if match:
+                question = match.group(1).strip()
+                logger.info(f"🤖➡️👤 LLM requested escalation: {question}")
+                
+                if self.escalation.is_available():
+                    try:
+                        human_response = self.escalation.ask_human(question, context)
+                        if human_response.strip():
+                            logger.info(f"👤➡️🤖 Human provided response: {human_response}")
+                            return human_response
+                        else:
+                            logger.warning("👤 No response from human, continuing with original")
+                    except Exception as e:
+                        logger.warning(f"Escalation failed: {e}")
+                else:
+                    logger.warning("⚠️ Escalation requested but not available")
+                
+                # Return the original response without the escalation prefix
+                return response.split(":", 1)[1].strip() if ":" in response else response
+        
+        return response
+
+    def _request_human_help(self, question: str, context: str = "") -> str:
+        """
+        Direct method for requesting human help from anywhere in the code.
+        
+        Returns:
+            Human response or empty string if not available
+        """
+        logger.info(f"🤖➡️👤 Direct escalation request: {question}")
+        
+        if self.escalation.is_available():
+            try:
+                response = self.escalation.ask_human(question, context)
+                logger.info(f"👤➡️🤖 Human response received")
+                return response
+            except Exception as e:
+                logger.warning(f"Direct escalation failed: {e}")
+        else:
+            logger.warning("⚠️ Direct escalation requested but not available")
+        
+        return ""
 
     # ------------------------------------------------------------------
     # BaseReasoner hook implementations
@@ -207,16 +276,39 @@ class BulletPlanReasoner(BaseReasoner):
         if not state.plan:  # first call → create plan
             logger.info("No existing plan, generating new plan")
             bullet_plan_template = self._load_prompt("bullet_plan")
-            prompt = bullet_plan_template.format(goal=state.goal)
-            logger.debug(f"Planning prompt:\n{prompt}")
             
-            messages = [{"role": "user", "content": prompt}]
+            # Enhanced planning prompt with confidence guidance
+            enhanced_prompt = f"""
+{bullet_plan_template.format(goal=state.goal)}
+
+CONFIDENCE GUIDANCE:
+- Interpret the goal using reasonable assumptions about what the user likely wants
+- For "send a Discord message", assume they want to use Discord's API/webhook system
+- For "open Discord", assume they want to send a message via Discord tools, not literally open the app
+- Only escalate if the goal has multiple genuinely different interpretations
+
+If you must escalate for clarification, start your response with: HUMAN: <your question>
+Otherwise, provide the markdown bullet plan as requested.
+"""
+            
+            messages = [{"role": "user", "content": enhanced_prompt}]
             logger.info("Calling LLM for plan generation")
             response = self.llm.chat(messages=messages)
             logger.info(f"LLM planning response:\n{response}")
             
+            # Process for escalation
+            context = f"Goal: {state.goal}\nPhase: Planning"
+            processed_response = self._process_llm_response_for_escalation(response, context)
+            
+            # If response changed due to escalation, use the human guidance as the new goal
+            if processed_response != response:
+                logger.info("Planning was escalated to human, updating goal with guidance")
+                state.goal = processed_response
+                # Re-run planning with the clarified goal
+                return self.plan(state)
+            
             logger.info("Extracting fenced code from response")
-            plan_markdown = self._extract_fenced_code(response)
+            plan_markdown = self._extract_fenced_code(processed_response)
             logger.debug(f"Extracted plan markdown:\n{plan_markdown}")
             
             logger.info("Parsing bullet plan")
@@ -262,7 +354,53 @@ class BulletPlanReasoner(BaseReasoner):
         
         if not hits:
             logger.error(f"No tools found for search query: {search_query}")
-            raise RuntimeError(f"No tool found for step: {plan_step.text}")
+            
+            # Enhanced escalation for tool selection
+            if self.escalation.is_available():
+                question = f"""
+No tools were found for the step: "{plan_step.text}"
+Search query used: "{search_query}"
+
+This could mean:
+1. The search query needs to be refined
+2. We need to use a different approach
+3. The required tool might not exist
+
+How should I proceed? You can:
+- Suggest a better search query
+- Recommend a different approach  
+- Provide specific tool guidance
+- Tell me to skip this step
+"""
+                context = f"Step: {plan_step.text}\nSearch query: {search_query}\nGoal: {state.goal}"
+                
+                try:
+                    human_response = self._request_human_help(question, context)
+                    if human_response.strip():
+                        # Check if human provided a search query
+                        if "search:" in human_response.lower():
+                            new_query = human_response.split(":", 1)[1].strip()
+                            logger.info(f"Human provided new search query: {new_query}")
+                            hits = self.jentic.search(new_query, top_k=self.search_top_k)
+                            if hits:
+                                logger.info(f"Human-guided search found {len(hits)} tools")
+                            else:
+                                raise RuntimeError(f"Human-guided search also found no tools")
+                        elif "skip" in human_response.lower():
+                            logger.info("Human advised to skip this step")
+                            raise RuntimeError("Human advised to skip step")
+                        else:
+                            # Treat response as a new step description
+                            logger.info("Human provided alternative approach")
+                            plan_step.text = human_response
+                            return self.select_tool(plan_step, state)
+                    else:
+                        raise RuntimeError(f"No tool found for step: {plan_step.text}")
+                except Exception as e:
+                    logger.error(f"Tool selection escalation failed: {e}")
+                    raise RuntimeError(f"No tool found for step: {plan_step.text}")
+            else:
+                raise RuntimeError(f"No tool found for step: {plan_step.text}")
 
         logger.info("Found tool candidates:")
         tool_lines_list = []
@@ -292,18 +430,64 @@ class BulletPlanReasoner(BaseReasoner):
             goal_info = f"\nOverall goal: {state.goal}"
         
         select_tool_template = self._load_prompt("select_tool")
-        select_tool_prompt = select_tool_template.format(
-            plan_step_text=plan_step.text,
-            goal_info=goal_info,
-            tool_lines=tool_lines
-        )
         
-        logger.debug(f"Tool selection prompt:\n{select_tool_prompt}")
+        # Enhanced tool selection with confidence guidance
+        enhanced_select_prompt = f"""
+{select_tool_template.format(
+    plan_step_text=plan_step.text,
+    goal_info=goal_info,
+    tool_lines=tool_lines
+)}
+
+SELECTION GUIDANCE:
+- Choose the tool that best matches the task requirements
+- If multiple tools could work, pick the one that seems most suitable
+- Only escalate if you genuinely cannot determine which tool is appropriate
+- Make your choice decisively based on the tool descriptions
+
+If you must escalate, respond with: HUMAN: <your question>
+Otherwise, respond with just the number of your chosen tool.
+"""
         
-        messages = [{"role": "user", "content": select_tool_prompt}]
+        logger.debug(f"Tool selection prompt:\n{enhanced_select_prompt}")
+        
+        messages = [{"role": "user", "content": enhanced_select_prompt}]
         logger.info("Calling LLM for tool selection")
         reply = self.llm.chat(messages=messages).strip()
         logger.info(f"LLM tool selection response: '{reply}'")
+
+        # Process for escalation
+        context = f"Step: {plan_step.text}\nAvailable tools: {len(hits)}\nGoal: {state.goal}"
+        processed_reply = self._process_llm_response_for_escalation(reply, context)
+        
+        if processed_reply != reply:
+            # Human provided guidance, use it as new selection criteria
+            logger.info("Tool selection escalated, processing human guidance")
+            # Try to match human guidance to available tools or search again
+            for i, h in enumerate(hits):
+                tool_name = h.get('name', '') if isinstance(h, dict) else getattr(h, 'name', '')
+                if processed_reply.lower() in tool_name.lower():
+                    selected_hit = hits[i]
+                    tool_id = selected_hit.get('id') if isinstance(selected_hit, dict) else getattr(selected_hit, 'id', None)
+                    logger.info(f"Human guidance matched tool: {tool_name} (ID: {tool_id})")
+                    plan_step.tool_id = tool_id
+                    return tool_id
+            
+            # If no match, try searching with human guidance
+            try:
+                new_hits = self.jentic.search(processed_reply, top_k=self.search_top_k)
+                if new_hits:
+                    selected_hit = new_hits[0]  # Use first result
+                    tool_id = selected_hit.get('id') if isinstance(selected_hit, dict) else getattr(selected_hit, 'id', None)
+                    tool_name = selected_hit.get('name', tool_id) if isinstance(selected_hit, dict) else getattr(selected_hit, 'name', tool_id)
+                    logger.info(f"Human guidance found new tool: {tool_name} (ID: {tool_id})")
+                    plan_step.tool_id = tool_id
+                    return tool_id
+            except Exception as e:
+                logger.warning(f"Could not search with human guidance: {e}")
+            
+            # Fallback to original selection logic
+            reply = processed_reply
 
         # Detect a "no suitable tool" reply signalled by leading 0 (e.g. "0", "0.", "0 -", etc.)
         if re.match(r"^\s*0\D?", reply):
@@ -369,80 +553,323 @@ class BulletPlanReasoner(BaseReasoner):
             context_text += f" (Context: This is part of a larger goal to '{plan_step.goal_context}')"
 
         keyword_extraction_template = self._load_prompt("keyword_extraction")
-        keyword_prompt = keyword_extraction_template.format(context_text=context_text)
+        
+        # Enhanced keyword extraction with confidence guidance
+        enhanced_prompt = f"""
+{keyword_extraction_template.format(context_text=context_text)}
+
+GUIDANCE:
+- Generate search keywords based on reasonable interpretation of the task
+- Focus on the core functionality needed, not literal interpretation
+- For "open Discord", search for "Discord messaging" or "Discord API" tools
+- For "send message", search for "messaging" or "notification" tools
+- Only escalate if the task is genuinely incomprehensible
+
+If you must escalate, respond with: HUMAN: <your question>
+Otherwise, provide the search keywords.
+"""
 
         logger.info("Calling LLM for keyword extraction")
-        messages = [{"role": "user", "content": keyword_prompt}]
+        messages = [{"role": "user", "content": enhanced_prompt}]
         keywords = self.llm.chat(messages=messages).strip()
+        
+        # Process for escalation
+        context = f"Step: {plan_step.text}\nGoal: {state.goal}"
+        processed_keywords = self._process_llm_response_for_escalation(keywords, context)
 
         # Clean up the response, removing potential quotes
-        keywords = keywords.strip('"\'')
+        processed_keywords = processed_keywords.strip('"\'')
 
-        logger.info(f"AI extracted keywords: '{keywords}'")
-        return keywords
+        logger.info(f"AI extracted keywords: '{processed_keywords}'")
+        return processed_keywords
 
     # 3. ACT ------------------------------------------------------------
-    def act(self, tool_id: str, state: ReasonerState):
+    def act(self, tool_id: str, state: ReasonerState, current_step: Step):
+        """
+        Generate parameters for and execute a Jentic tool.
+        """
         logger.info("=== ACTION PHASE ===")
         logger.info(f"Executing action with tool_id: {tool_id}")
         
         logger.info("Loading tool information from Jentic")
         tool_info = self.jentic.load(tool_id)
-        logger.debug(f"Tool info: {tool_info}")
         
-        # Use tool info directly without filtering credentials
-        # Jentic platform should handle credential injection automatically
-        if isinstance(tool_info, dict):
-            tool_schema = tool_info
-        elif hasattr(tool_info, 'schema_summary') and isinstance(tool_info.schema_summary, dict):
-            tool_schema = tool_info.schema_summary
+        # NOTE: Pass only the current step's text to the parameter generation AI.
+        # This prevents the LLM from trying to use details from the *history*
+        # to find a tool, which are not valid inputs for the tool itself.
+        current_step_text = current_step.text
+        params = self._generate_params_with_ai(tool_id, state, current_step_text)
+        current_step.params = params  # Store params for context
+
+        logger.info(f"Executing tool {tool_id} with args: {params}")
+        try:
+            result = self.jentic.execute(tool_id, params)
+            logger.info(f"Tool execution result: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"Tool execution failed: {e}")
+            raise RuntimeError(f"Tool execution failed: {e}")
+
+    def _generate_params_with_ai(self, tool_id: str, state: ReasonerState, step_text: str) -> Dict[str, Any]:
+        """
+        Use AI to generate parameters for a Jentic tool call based on the step description.
+        
+        Args:
+            tool_id: The Jentic tool identifier
+            state: Current reasoning state with goal and context
+            step_text: Natural language description of what to do
+            
+        Returns:
+            Dictionary of parameters to pass to the tool
+        """
+        logger.info(f"Generating parameters for tool {tool_id} with step: {step_text}")
+        
+        # Load the parameter generation prompt
+        param_prompt_template = self._load_prompt("param_generation")
+        
+        # Get tool schema from the loaded tool info
+        tool_info = self.jentic.load(tool_id)
+        tool_schema = tool_info.get("parameters", {})
+        required_params = tool_info.get("required", [])
+        
+        # Build context from memory and current state
+        memory_context = ""
+        if hasattr(self.memory, 'get_recent_entries'):
+            recent_entries = self.memory.get_recent_entries(limit=5)
+            if recent_entries:
+                memory_context = "\n".join([f"- {entry}" for entry in recent_entries])
+
+        # NEW: build enumeration of all memory items for the prompt template
+        memory_enum = ""
+        if hasattr(self.memory, 'enumerate_for_prompt'):
+            try:
+                memory_enum = self.memory.enumerate_for_prompt()
+            except Exception as e:
+                logger.warning(f"Failed to enumerate memory for prompt: {e}")
+                memory_enum = "(memory enumeration unavailable)"
         else:
-            tool_schema = str(tool_info)
-        logger.debug(f"Tool schema: {tool_schema}")
+            memory_enum = "(memory enumeration not supported)"
 
-        logger.info("Enumerating memory for prompt")
-        memory_enum = self.memory.enumerate_for_prompt()
-        logger.debug(f"Memory enumeration: {memory_enum}")
+        # Enhanced parameter generation with confidence guidance
+        enhanced_param_prompt = f"""
+{param_prompt_template.format(
+    goal=state.goal,
+    step=step_text,
+    tool_id=tool_id,
+    tool_schema=json.dumps(tool_schema, indent=2),
+    required_params=", ".join(required_params) if required_params else "None",
+    memory_context=memory_context or "No recent context available",
+    memory_enum=memory_enum or "(memory empty)"
+)}
 
-        def _escape_braces(text: str) -> str:
-            """Escape curly braces so str.format doesn't treat them as placeholders."""
-            return text.replace('{', '{{').replace('}', '}}')
+PARAMETER GUIDANCE:
+- Generate parameters confidently based on the goal and step description
+- Use reasonable default values when specific details aren't provided
+- For messages, use the step text or goal as the message content
+- For channels/targets, use generic identifiers that can be corrected later
+- Only request human input for truly unknowable values (specific IDs, tokens, credentials)
 
-        # Convert tool schema to string for formatting if it's a dict
-        tool_schema_str = str(tool_schema) if isinstance(tool_schema, dict) else tool_schema
-
-        param_generation_template = self._load_prompt("param_generation")
-        prompt = param_generation_template.format(
-            tool_id=tool_id,
-            tool_schema=_escape_braces(tool_schema_str),
-            memory_enum=_escape_braces(memory_enum),
-            goal=state.goal,
-        )
-        logger.debug(f"Parameter generation prompt:\n{prompt}")
+If you need specific values only the human knows, respond with: NEED_HUMAN_INPUT: [parameter names]
+If you need clarification about the task, respond with: HUMAN: <your question>
+Otherwise, provide the JSON parameters confidently.
+"""
         
-        messages = [{"role": "user", "content": prompt}]
-        logger.info("Calling LLM for parameter generation")
-        args_json = self.llm.chat(messages=messages)
-        logger.info(f"LLM parameter response:\n{args_json}")
+        logger.debug(f"Parameter generation prompt: {enhanced_param_prompt}")
         
         try:
-            logger.info("Parsing JSON parameters")
-            args: Dict[str, Any] = self._safe_json_loads(args_json)
-            logger.debug(f"Parsed args: {args}")
-        except ValueError as e:
-            logger.error(f"Failed to parse JSON args: {e}")
-            logger.error(f"Raw args_json: {args_json}")
-            raise RuntimeError(f"LLM produced invalid JSON args: {e}\n{args_json}")
+            # Get AI response
+            response = self.llm.chat(messages=[{"role": "user", "content": enhanced_param_prompt}])
+            logger.debug(f"AI parameter response: {response}")
+            
+            response = response.strip()
+            
+            # Process general escalation first
+            context = f"Step: {step_text}\nTool: {tool_id}\nPhase: Parameter Generation"
+            processed_response = self._process_llm_response_for_escalation(response, context)
+            
+            if processed_response != response:
+                # Human provided guidance, re-generate parameters with the guidance
+                logger.info("Parameter generation escalated, incorporating human guidance")
+                guidance_prompt = f"""
+Based on this human guidance: "{processed_response}"
 
-        # Host‑side memory placeholder substitution (simple impl)
-        logger.info("Resolving memory placeholders")
-        concrete_args = self._resolve_placeholders(args)
-        logger.debug(f"Concrete args after placeholder resolution: {concrete_args}")
+Please generate parameters for tool {tool_id} to accomplish: {step_text}
 
-        logger.info(f"Executing tool {tool_id} with args: {concrete_args}")
-        result = self.jentic.execute(tool_id, concrete_args)
-        logger.info(f"Tool execution result: {result}")
-        return result
+Tool schema: {json.dumps(tool_schema, indent=2)}
+Required parameters: {", ".join(required_params) if required_params else "None"}
+
+Return ONLY the JSON object with parameters.
+"""
+                try:
+                    guided_response = self.llm.chat(messages=[{"role": "user", "content": guidance_prompt}])
+                    response = guided_response.strip()
+                except Exception as e:
+                    logger.warning(f"Failed to re-generate with human guidance: {e}")
+                    response = processed_response
+            
+            # Check if LLM is asking for human input upfront
+            if response.startswith("NEED_HUMAN_INPUT:"):
+                missing_params_str = response[len("NEED_HUMAN_INPUT:"):].strip()
+                missing_params = [p.strip() for p in missing_params_str.split(",")]
+                logger.info(f"🤖➡️👤 LLM identified missing parameters: {missing_params}")
+                
+                if self.escalation.is_available():
+                    question = (
+                        "I need the following information to execute this tool:\n"
+                        f"{', '.join(missing_params)}\n\n"
+                        "Please provide the values. You can respond with either:\n"
+                        "1. A JSON object like: {\"channel_id\": \"123456789\", \"message\": \"hello\"}\n"
+                        "2. Simple key: value pairs on separate lines"
+                    )
+                    context = (
+                        f"Step: {step_text}\n"
+                        f"Tool: {tool_id}\n"
+                        f"Tool Schema: {json.dumps(tool_schema, indent=2)}"
+                    )
+                    
+                    try:
+                        human_reply = self.escalation.ask_human(question, context)
+                        if human_reply.strip():
+                            logger.info(f"👤➡️🤖 Human provided response: {human_reply}")
+                            
+                            # Try to parse as JSON first
+                            try:
+                                params = json.loads(human_reply)
+                                if isinstance(params, dict):
+                                    logger.info(f"✅ Parsed human input as JSON: {list(params.keys())}")
+                                    return params
+                            except json.JSONDecodeError:
+                                pass
+                            
+                            # Fall back to key:value parsing
+                            params = {}
+                            logger.info("Parsing human response as key:value pairs")
+                            for line in human_reply.splitlines():
+                                if ":" in line:
+                                    k, v = [x.strip() for x in line.split(":", 1)]
+                                    if k:
+                                        params[k] = v
+                                        logger.info(f"✅ Set {k} = {v}")
+                            
+                            if params:
+                                return params
+                            else:
+                                logger.warning("Could not parse human response, falling back to empty params")
+                                return {}
+                        else:
+                            logger.warning("👤 Human provided empty response")
+                            return {}
+                    except Exception as esc_err:
+                        logger.warning(f"HITL escalation failed: {esc_err}")
+                        return {}
+                else:
+                    logger.warning(f"⚠️ LLM needs human input but HITL not available: {missing_params}")
+                    # Return minimal params with placeholders as fallback
+                    params = {}
+                    for param in missing_params:
+                        if param in ["message", "content", "text"]:
+                            params[param] = step_text
+                        else:
+                            params[param] = f"MISSING_{param.upper()}"
+                    return params
+            
+            # Parse JSON response (normal case where LLM has all the info)
+            if response.startswith("```json"):
+                response = response[7:]
+            if response.endswith("```"):
+                response = response[:-3]
+            response = response.strip()
+            
+            params = json.loads(response)
+            logger.info("✅ LLM provided complete parameters without needing human input")
+            
+            # ------------------------------------------------------------------
+            # Legacy fallback: Validate parameters and escalate if we find issues
+            # (This should be less common now with the improved prompt)
+            # ------------------------------------------------------------------
+            missing_params = [p for p in required_params if p not in params]
+            if missing_params:
+                logger.warning(f"Missing required parameters: {missing_params}")
+                # Apply trivial defaults for very common fields
+                for param in missing_params:
+                    if param in ["message", "content", "text"]:
+                        params[param] = step_text  # use step text as a sensible default
+                    elif param in ["channel_id", "chat_id"] and "discord" in tool_id.lower():
+                        params[param] = "MISSING_CHANNEL_ID"  # obvious placeholder
+
+            # Detect placeholder-style values that still need human input
+            def _looks_placeholder(value: Any) -> bool:
+                return (
+                    isinstance(value, str)
+                    and any(tok in value.lower() for tok in (
+                        "provide", "missing", "todo", "tbd", "please", "enter", "specify",
+                        "your_", "example", "placeholder", "fill", "replace", "here"
+                    ))
+                )
+
+            unresolved = [p for p in required_params if p not in params]
+            unresolved += [k for k, v in params.items() if _looks_placeholder(v)]
+
+            # Human-in-the-loop escalation
+            if unresolved and self.escalation.is_available():
+                logger.info(f"🤖➡️👤 HITL escalation triggered for unresolved parameters: {unresolved}")
+                question = (
+                    "I need concrete values for the following parameters before I can execute the tool:\n"
+                    f"{', '.join(unresolved)}\n"
+                    "Please reply with a JSON object mapping each parameter name to its value."
+                )
+                context = (
+                    f"Step: {step_text}\n"
+                    f"Tool ID: {tool_id}\n\nCurrent parameters (placeholders shown as-is):\n"
+                    f"{json.dumps(params, indent=2)}"
+                )
+
+                try:
+                    human_reply = self.escalation.ask_human(question, context)
+                    if human_reply.strip():
+                        logger.info(f"👤➡️🤖 Human provided response: {human_reply}")
+                        try:
+                            human_params = json.loads(human_reply)
+                            if isinstance(human_params, dict):
+                                params.update(human_params)
+                                logger.info(f"✅ Updated parameters with human input: {list(human_params.keys())}")
+                        except json.JSONDecodeError:
+                            # Accept simple "key: value" per line as a fallback
+                            logger.info("Parsing human response as key:value pairs")
+                            for line in human_reply.splitlines():
+                                if ":" in line:
+                                    k, v = [x.strip() for x in line.split(":", 1)]
+                                    if k:
+                                        params[k] = v
+                                        logger.info(f"✅ Set {k} = {v}")
+                    else:
+                        logger.warning("👤 Human provided empty response")
+                except Exception as esc_err:
+                    logger.warning(f"HITL escalation failed or skipped: {esc_err}")
+
+                # Re-evaluate unresolved params post-escalation
+                unresolved = [p for p in required_params if p not in params]
+                unresolved += [k for k, v in params.items() if _looks_placeholder(v)]
+                if unresolved:
+                    logger.warning(f"Still unresolved parameters after HITL: {unresolved}")
+                else:
+                    logger.info("✅ All parameters resolved after HITL")
+            elif unresolved:
+                logger.warning(f"⚠️ Unresolved parameters detected but HITL not available: {unresolved}")
+            else:
+                logger.info("✅ All required parameters are present and valid")
+            
+            logger.info(f"Generated parameters: {json.dumps(params, indent=2)}")
+            return params
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse AI response as JSON: {e}")
+            logger.error(f"Raw response: {response}")
+            # Return minimal parameters
+            return {"error": f"Failed to parse parameters: {str(e)}"}
+        except Exception as e:
+            logger.error(f"Error generating parameters: {e}")
+            return {"error": f"Parameter generation failed: {str(e)}"}
 
     # 4. OBSERVE --------------------------------------------------------
     def observe(self, observation: Any, state: ReasonerState):
@@ -528,24 +955,95 @@ class BulletPlanReasoner(BaseReasoner):
 
     # 6. REFLECT (optional) --------------------------------------------
     def reflect(self, current_step: Step, err_msg: str) -> bool:
+        """
+        Analyze a failed step and decide whether to retry, revise, or escalate.
+        """
         logger.info("=== REFLECTION PHASE ===")
         logger.info(f"Reflecting on failed step: {current_step.text}")
         logger.info(f"Error message: {err_msg}")
         logger.info(f"Reflection attempts so far: {current_step.reflection_attempts}")
         
-        # Limit reflection attempts to prevent infinite loops
-        if current_step.reflection_attempts >= MAX_REFLECTION_ATTEMPTS:
-            logger.warning(
-                "Max reflection attempts (%s) reached for step, giving up",
-                MAX_REFLECTION_ATTEMPTS,
-            )
-            return False
-            
         current_step.reflection_attempts += 1
         
-        # Generic fallback - extract key action words
+        # Enhanced reflection with dynamic escalation
+        reflection_prompt = f"""
+You are an AI agent reflecting on a failed step. You have several options:
+
+1. Try a different approach: TRY: <revised step description>
+2. Ask for human guidance: HUMAN: <your question>
+3. Skip this step: SKIP
+4. Request human debugging help: ESCALATE: <question for human>
+
+Failed step: {current_step.text}
+Error: {err_msg}
+Attempts so far: {current_step.reflection_attempts}
+
+What's your choice?"""
+
+        try:
+            response = self.llm.chat(messages=[{"role": "user", "content": reflection_prompt}]).strip()
+            logger.info(f"Reflection decision: {response}")
+            
+            # Process escalation first
+            context = f"""
+Step: {current_step.text}
+Tool: {current_step.tool_id}
+Params: {json.dumps(current_step.params, indent=2)}
+Error: {err_msg}
+Attempts: {current_step.reflection_attempts}
+Phase: Reflection
+"""
+            processed_response = self._process_llm_response_for_escalation(response, context)
+            
+            if processed_response != response:
+                # Human provided guidance via escalation
+                logger.info("Reflection escalated, using human guidance")
+                current_step.text = processed_response
+                current_step.status = "pending"
+                current_step.tool_id = None
+                return True
+            
+            # Handle traditional reflection responses
+            if response.startswith("TRY:"):
+                revised_step = response[4:].strip()
+                logger.info(f"Agent chose to try again with revised step: {revised_step}")
+                current_step.text = revised_step
+                current_step.status = "pending"
+                current_step.tool_id = None
+                return True
+                
+            elif response.startswith("ESCALATE:") and self.escalation.is_available():
+                question = response[9:].strip()
+                logger.info(f"Agent chose to escalate with question: {question}")
+                
+                human_response = self._request_human_help(question, context)
+                
+                if human_response.strip():
+                    logger.info(f"Human provided guidance: {human_response}")
+                    current_step.text = human_response
+                    current_step.status = "pending"
+                    current_step.tool_id = None
+                    return True
+                else:
+                    logger.warning("No human response received, trying fallback approach")
+                    return self._try_fallback_approach(current_step)
+                    
+            elif response.startswith("SKIP"):
+                logger.info("Agent chose to skip this step")
+                return False
+                
+            else:
+                # Fallback if response format is unexpected
+                logger.warning(f"Unexpected reflection response format: {response}")
+                return self._try_fallback_approach(current_step)
+                
+        except Exception as e:
+            logger.error(f"Error during reflection: {e}")
+            return self._try_fallback_approach(current_step)
+
+    def _try_fallback_approach(self, current_step: Step) -> bool:
+        """Fallback approach when reflection fails - extract key words."""
         words = current_step.text.split()
-        # Filter for meaningful words (nouns, verbs) and take the first few
         key_words = [w.strip('.,!?:;').lower() for w in words if len(w) > 3 and w.isalpha()][:4]
         
         if key_words:
@@ -553,11 +1051,10 @@ class BulletPlanReasoner(BaseReasoner):
         else:
             revised_step = "general purpose tool"
         
-        # Ensure single line and reasonable length
+        revised_step = revised_step.strip().replace('\n', ' ')[:80]
+        
         if revised_step:
-            revised_step = revised_step.strip().replace('\n', ' ')[:80]
-            
-            logger.info(f"Simplified step from '{current_step.text}' to '{revised_step}'")
+            logger.info(f"Fallback: Simplified step from '{current_step.text}' to '{revised_step}'")
             current_step.text = revised_step
             current_step.status = "pending"
             current_step.tool_id = None
@@ -648,26 +1145,46 @@ class BulletPlanReasoner(BaseReasoner):
             logger.debug("Could not build memory payload: %s", exc)
 
         reasoning_template = self._load_prompt("reasoning_prompt")
-        reasoning_prompt = reasoning_template.format(
-            step=step.text, 
-            mem=json.dumps(mem_payload, indent=2)
-        )
+        
+        # Enhanced reasoning with escalation capability
+        enhanced_reasoning_prompt = f"""
+{reasoning_template.format(
+    step=step.text, 
+    mem=json.dumps(mem_payload, indent=2)
+)}
+
+ESCALATION OPTION:
+If you need clarification about the task or additional information to complete it,
+you can ask for help by responding with:
+HUMAN: <your question>
+
+Otherwise, provide the result as specified above.
+"""
 
         try:
-            reply = self.llm.chat(messages=[{"role": "user", "content": reasoning_prompt}]).strip()
+            reply = self.llm.chat(messages=[{"role": "user", "content": enhanced_reasoning_prompt}]).strip()
             logger.debug("Reasoning LLM reply: %s", reply)
+
+            # Process for escalation
+            context = f"Step: {step.text}\nPhase: Reasoning\nGoal: {state.goal}"
+            processed_reply = self._process_llm_response_for_escalation(reply, context)
+            
+            if processed_reply != reply:
+                # Human provided guidance, use it as the reasoning result
+                logger.info("Reasoning step escalated, using human guidance as result")
+                return self._resolve_placeholders(processed_reply)
 
             # Attempt to parse JSON result if present. If successful, resolve
             # placeholders within the structure. Otherwise, resolve on the raw string.
-            if reply.startswith("{") and reply.endswith("}"):
+            if processed_reply.startswith("{") and processed_reply.endswith("}"):
                 try:
-                    parsed_json = json.loads(reply)
+                    parsed_json = json.loads(processed_reply)
                     return self._resolve_placeholders(parsed_json)
                 except json.JSONDecodeError:
                     # Not valid JSON, fall through to treat as a raw string
                     pass
         
-            return self._resolve_placeholders(reply)
+            return self._resolve_placeholders(processed_reply)
         except Exception as exc:  # noqa: BLE001
             logger.error("Reasoning step failed: %s", exc)
             return f"Error during reasoning: {exc}"
@@ -681,6 +1198,7 @@ class BulletPlanReasoner(BaseReasoner):
         logger.info("=== STARTING REASONING LOOP ===")
         logger.info(f"Goal: {goal}")
         logger.info(f"Max iterations: {max_iterations}")
+        logger.info(f"Escalation available: {self.escalation.is_available()}")
         
         from .base_reasoner import ReasoningResult  # local import to avoid circular
 
@@ -695,6 +1213,11 @@ class BulletPlanReasoner(BaseReasoner):
             if state.goal_completed:
                 logger.info("Goal marked as completed! Breaking from loop")
                 break
+            
+            # Agent can proactively check if it needs human help before proceeding
+            if iteration > 0 and self._should_check_for_human_guidance(state, iteration):
+                if self._check_for_proactive_escalation(state, iteration):
+                    continue  # Human guidance may have modified the state
             
             # Ensure we have at least one step planned.
             if not state.plan:
@@ -720,8 +1243,15 @@ class BulletPlanReasoner(BaseReasoner):
                     tool_id = self.select_tool(current_step, state)
                     logger.info(f"Selected tool: {tool_id}")
 
-                    result = self.act(tool_id, state)
+                    result = self.act(tool_id, state, current_step)
                     logger.info(f"Action completed with result type: {type(result)}")
+
+                    # If tool execution failed, raise an exception to trigger reflection
+                    inner_result = result.get("result")
+                    if hasattr(inner_result, "success") and not inner_result.success:
+                        err_msg = f"Tool '{tool_id}' failed: {getattr(inner_result, 'error', 'No error details')}"
+                        logger.error(err_msg)
+                        raise RuntimeError(err_msg)
 
                     tool_calls.append({
                         "tool_id": tool_id,
@@ -773,6 +1303,79 @@ class BulletPlanReasoner(BaseReasoner):
         )
         logger.info(f"Returning result: {result}")
         return result
+    
+    def _should_check_for_human_guidance(self, state: ReasonerState, iteration: int) -> bool:
+        """Determine if the agent should proactively check for human guidance."""
+        if not self.escalation.is_available():
+            return False
+            
+        # Let the agent decide every few iterations if it wants to check for guidance
+        # Remove automatic failure/complexity triggers - agent should decide
+        return iteration > 0 and iteration % 4 == 0  # Check every 4 iterations
+    
+    def _check_for_proactive_escalation(self, state: ReasonerState, iteration: int) -> bool:
+        """Let the agent proactively ask for human guidance."""
+        if not self.escalation.is_available():
+            return False
+            
+        # Build context for the agent to decide
+        remaining_steps = list(state.plan)
+        recent_failures = [h for h in state.history if "failed" in h.lower()]
+        
+        escalation_check_prompt = f"""
+You are working on the goal: "{state.goal}"
+
+Current situation:
+- Iteration: {iteration}
+- Completed steps: {len(state.history)}
+- Remaining steps: {len(remaining_steps)}
+
+Remaining plan:
+{chr(10).join([f"- {step.text}" for step in remaining_steps[:3]])}
+{"..." if len(remaining_steps) > 3 else ""}
+
+Recent activity:
+{chr(10).join(state.history[-3:]) if state.history else "None"}
+
+Do you want to ask a human for guidance at this point? You have full autonomy to decide based on:
+- Your confidence in the current approach
+- Whether you need clarification about anything
+- If you want confirmation before proceeding
+- Any other reason you think human input would be helpful
+
+Respond with:
+- HUMAN: <your question> - to ask for guidance
+- CONTINUE - to proceed without asking
+
+Your choice:"""
+
+        try:
+            response = self.llm.chat(messages=[{"role": "user", "content": escalation_check_prompt}]).strip()
+            logger.info(f"Proactive escalation check response: {response}")
+            
+            # Process escalation request
+            context = f"Goal: {state.goal}\nIteration: {iteration}\nPhase: Proactive Check"
+            processed_response = self._process_llm_response_for_escalation(response, context)
+            
+            if processed_response != response:
+                # Human provided guidance, incorporate it
+                logger.info("Agent proactively escalated, incorporating human guidance")
+                
+                # Update goal or add guidance to history
+                if "goal:" in processed_response.lower():
+                    # Update goal if human provided clarification
+                    state.goal = processed_response
+                    state.plan.clear()  # Clear plan to regenerate with new goal
+                else:
+                    # Add as contextual guidance
+                    state.history.append(f"Human guidance: {processed_response}")
+                
+                return True
+                
+        except Exception as e:
+            logger.warning(f"Proactive escalation check failed: {e}")
+        
+        return False
 
     # ------------------------------------------------------------------
     # Helper utilities
