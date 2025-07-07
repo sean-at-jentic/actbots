@@ -63,4 +63,4 @@ def cleanse(obj: Any) -> Any:
         return [cleanse(v) for v in obj]
     if isinstance(obj, dict):
         return {k: cleanse(v) for k, v in obj.items()}
-    return obj 
+    return obj

@@ -1,6 +1,7 @@
 """
 CLI implementation of BaseController that aggregates CLI-specific communication channels.
 """
+
 from typing import Optional
 from .base_controller import BaseController
 from .inbox.cli_inbox import CLIInbox
@@ -11,11 +12,11 @@ from .outbox.cli_outbox import CLIOutbox
 class CLIController(BaseController):
     """
     CLI-specific communication controller.
-    
+
     Aggregates CLI implementations of inbox, intervention hub, and outbox
     for command-line based agent interactions.
     """
-    
+
     def __init__(
         self,
         inbox: Optional[CLIInbox] = None,
@@ -24,7 +25,7 @@ class CLIController(BaseController):
     ):
         """
         Initialize CLI controller with optional custom implementations.
-        
+
         Args:
             inbox: CLI inbox (defaults to CLIInbox with standard prompt)
             intervention_hub: CLI intervention hub (defaults to CLIInterventionHub)
@@ -33,5 +34,5 @@ class CLIController(BaseController):
         super().__init__(
             inbox=inbox or CLIInbox(prompt="Enter goal: "),
             intervention_hub=intervention_hub or CLIInterventionHub(),
-            outbox=outbox or CLIOutbox(verbose=True)
-        ) 
+            outbox=outbox or CLIOutbox(verbose=True),
+        )

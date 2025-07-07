@@ -1,6 +1,7 @@
 """
 Thin wrapper around jentic-sdk for centralized auth, retries, and logging.
 """
+
 import logging
 import os
 from typing import Any, Dict, List, Optional
@@ -22,7 +23,7 @@ class JenticClient:
 
         Args:
             api_key: Jentic API key. If None, reads from JENTIC_API_KEY environment variable.
-        
+
         Raises:
             ImportError: If the 'jentic' SDK is not installed.
         """
@@ -33,6 +34,7 @@ class JenticClient:
         # module import-time) so unit-tests can monkey-patch the import path.
         try:
             from jentic import Jentic  # type: ignore
+
             self._sdk_client = Jentic(api_key=self.api_key)  # async SDK instance
 
             # Models are only needed inside methods, so we import them lazily to
@@ -44,7 +46,9 @@ class JenticClient:
             logger.info("JenticClient initialized with Jentic services.")
 
         except ImportError as exc:
-            logger.error("The 'jentic' SDK could not be imported – ensure it is installed and available in the current environment.")
+            logger.error(
+                "The 'jentic' SDK could not be imported – ensure it is installed and available in the current environment."
+            )
             raise ImportError(
                 "The 'jentic' package is not installed or is an incompatible version. "
                 "Please run 'pip install -U jentic'."
@@ -102,31 +106,34 @@ class JenticClient:
 
         return self._format_and_cache_search_results(results_dict, top_k)
 
-    def _format_and_cache_search_results(self, payload: Dict[str, Any], top_k: int) -> List[Dict[str, Any]]:
+    def _format_and_cache_search_results(
+        self, payload: Dict[str, Any], top_k: int
+    ) -> List[Dict[str, Any]]:
         """Formats search results and caches tool metadata."""
         formatted_results = []
-        
+
         # API returns e.g. {"workflows": [...], "operations": [...]}  – iterate over both.
         for tool_type in ("workflows", "operations"):
             for tool in payload.get(tool_type, []):
-                tool_id = tool.get('workflow_id') or tool.get('operation_uuid')
+                tool_id = tool.get("workflow_id") or tool.get("operation_uuid")
                 if not tool_id:
                     continue
 
                 formatted_tool = {
                     "id": tool_id,
-                    "name": tool.get('summary', 'Unnamed Tool'),
-                    "description": tool.get('description') or f"{tool.get('method')} {tool.get('path')}",
-                    "type": "workflow" if tool_type == 'workflows' else "operation",
-                    "api_name": tool.get('api_name', 'unknown'),
-                    "parameters": {}  # Loaded on demand by load()
+                    "name": tool.get("summary", "Unnamed Tool"),
+                    "description": tool.get("description")
+                    or f"{tool.get('method')} {tool.get('path')}",
+                    "type": "workflow" if tool_type == "workflows" else "operation",
+                    "api_name": tool.get("api_name", "unknown"),
+                    "parameters": {},  # Loaded on demand by load()
                 }
                 formatted_results.append(formatted_tool)
                 self._tool_metadata_cache[tool_id] = {
                     "type": formatted_tool["type"],
-                    "api_name": formatted_tool["api_name"]
+                    "api_name": formatted_tool["api_name"],
                 }
-        
+
         return formatted_results[:top_k]
 
     def load(self, tool_id: str) -> Dict[str, Any]:
@@ -138,7 +145,9 @@ class JenticClient:
 
         tool_meta = self._tool_metadata_cache.get(tool_id)
         if not tool_meta:
-            raise ValueError(f"Tool '{tool_id}' not found in cache. Must be discovered via search() first.")
+            raise ValueError(
+                f"Tool '{tool_id}' not found in cache. Must be discovered via search() first."
+            )
 
         # Prepare and execute load request via SDK
         load_coro = self._sdk_client.load_execution_info(
@@ -155,38 +164,43 @@ class JenticClient:
 
         return self._format_load_results(tool_id, results)
 
-
-    def _format_load_results(self, tool_id: str, results: Dict[str, Any]) -> Dict[str, Any]:
+    def _format_load_results(
+        self, tool_id: str, results: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Formats loaded tool definition into a consistent structure."""
 
         # Check for workflows by iterating through them and matching the UUID
-        if 'workflows' in results and results['workflows']:
-            for workflow_key, workflow_data in results['workflows'].items():
-                if workflow_data.get('workflow_uuid') == tool_id:
+        if "workflows" in results and results["workflows"]:
+            for workflow_key, workflow_data in results["workflows"].items():
+                if workflow_data.get("workflow_uuid") == tool_id:
                     return {
                         "id": tool_id,
-                        "name": workflow_data.get('summary', 'Unnamed Workflow'),
-                        "description": workflow_data.get('description', ''),
+                        "name": workflow_data.get("summary", "Unnamed Workflow"),
+                        "description": workflow_data.get("description", ""),
                         "type": "workflow",
-                        "parameters": workflow_data.get('inputs', {}).get('properties', {}),
+                        "parameters": workflow_data.get("inputs", {}).get(
+                            "properties", {}
+                        ),
                         "executable": True,
                     }
 
         # Check for operations, assuming they are keyed by ID
-        if 'operations' in results and results['operations']:
-            if tool_id in results['operations']:
-                operation = results['operations'][tool_id]
+        if "operations" in results and results["operations"]:
+            if tool_id in results["operations"]:
+                operation = results["operations"][tool_id]
                 return {
                     "id": tool_id,
-                    "name": operation.get('summary', 'Unnamed Operation'),
+                    "name": operation.get("summary", "Unnamed Operation"),
                     "description": f"{operation.get('method')} {operation.get('path')}",
                     "type": "operation",
-                    "parameters": operation.get('inputs', {}).get('properties', {}),
-                    "required": operation.get('inputs', {}).get('required', []),
+                    "parameters": operation.get("inputs", {}).get("properties", {}),
+                    "required": operation.get("inputs", {}).get("required", []),
                     "executable": True,
                 }
 
-        logger.error(f"Failed to find tool '{tool_id}' in load results payload. Payload received: {results}")
+        logger.error(
+            f"Failed to find tool '{tool_id}' in load results payload. Payload received: {results}"
+        )
         raise ValueError(
             f"Could not format load result for tool_id: {tool_id}. "
             "The tool was not found in the payload returned by the Jentic API."
@@ -197,11 +211,13 @@ class JenticClient:
         Execute a tool with given parameters. Uses cached metadata to determine execution type.
         """
         logger.info(f"Executing tool: {tool_id}")
-        
+
         tool_meta = self._tool_metadata_cache.get(tool_id)
         if not tool_meta:
-            raise ValueError(f"Tool '{tool_id}' not found in cache. Must be discovered via search() first.")
-        
+            raise ValueError(
+                f"Tool '{tool_id}' not found in cache. Must be discovered via search() first."
+            )
+
         try:
             if tool_meta["type"] == "workflow":
                 exec_coro = self._sdk_client.execute_workflow(tool_id, params)

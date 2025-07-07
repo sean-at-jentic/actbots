@@ -1,6 +1,7 @@
 """
 CLI implementation of BaseInterventionHub for simple command-line escalation.
 """
+
 from typing import Optional
 
 # Use the shared console instance across components.
@@ -44,11 +45,11 @@ class CLIInterventionHub(BaseInterventionHub):
         self._console.print("=" * 60 + "\n")
 
         return response
-    
+
     def is_available(self) -> bool:
         """CLI escalation is always available."""
         return True
 
 
 # Backward compatibility aliases
-CLIEscalation = CLIInterventionHub 
+CLIEscalation = CLIInterventionHub

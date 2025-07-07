@@ -1,28 +1,28 @@
 """
-    # Create memory instance
-    memory = create_agent_memory()
-    
-    # Add memories
-    ids = memory.add("User loves pizza", user_id="alice", agent_id="bot1", session_id="sess1")
-    
-    # Search memories
-    results = memory.search("food preferences", user_id="alice", agent_id="bot1", limit=3)
-    
-    # Get all memories
-    all_memories = memory.get_all(user_id="alice", agent_id="bot1")
-    
-    # Get context for chat
-    context = memory.get_context_for_chat("What food does user like?", user_id="alice")
-    
-    # Update memory
-    memory.update(memory_id="mem_123", data="Updated memory text")
-    
-    # Delete memories
-    memory.delete_memory(memory_id="mem_123")
-    memory.delete_all(user_id="alice", agent_id="bot1")
-    
-    # Health check
-    status = memory.health_check()
+# Create memory instance
+memory = create_agent_memory()
+
+# Add memories
+ids = memory.add("User loves pizza", user_id="alice", agent_id="bot1", session_id="sess1")
+
+# Search memories
+results = memory.search("food preferences", user_id="alice", agent_id="bot1", limit=3)
+
+# Get all memories
+all_memories = memory.get_all(user_id="alice", agent_id="bot1")
+
+# Get context for chat
+context = memory.get_context_for_chat("What food does user like?", user_id="alice")
+
+# Update memory
+memory.update(memory_id="mem_123", data="Updated memory text")
+
+# Delete memories
+memory.delete_memory(memory_id="mem_123")
+memory.delete_all(user_id="alice", agent_id="bot1")
+
+# Health check
+status = memory.health_check()
 """
 
 from __future__ import annotations
@@ -30,11 +30,8 @@ from __future__ import annotations
 import os
 import time
 from typing import Any, Dict, List, Optional, Union
-import json
-from pathlib import Path
-import re
 
-from mem0 import Memory  
+from mem0 import Memory
 from ..utils.logger import get_logger
 from .base_memory import BaseMemory
 from ..utils.config import get_config_value
@@ -61,9 +58,7 @@ class AgentMemory(BaseMemory):
         """
 
         if config is None:
-            raise ValueError(
-                "`config` is required. Ue create_agent_memory()"
-            )
+            raise ValueError("`config` is required. Ue create_agent_memory()")
 
         # Silence Mem0 telemetry unless explicitly re-enabled
         if not enable_telemetry:
@@ -73,7 +68,6 @@ class AgentMemory(BaseMemory):
         self.config = config
 
         self._kv: Dict[str, Any] = {}  # alias for fast look-ups – mirrors _store.value
-
 
     def add(
         self,
@@ -118,15 +112,15 @@ class AgentMemory(BaseMemory):
         def _included(mem: Dict[str, Any]) -> bool:
             # Handle case where metadata is None
             metadata = mem.get("metadata") or {}
-            
+
             # Check agent_id (stored as top-level field)
             if agent_id and mem.get("agent_id") != agent_id:
                 return False
-            
+
             # Check session_id (stored in metadata)
             if session_id and metadata.get("session_id") != session_id:
                 return False
-                
+
             # Check additional filters (in metadata)
             if filters and any(metadata.get(k) != v for k, v in filters.items()):
                 return False
@@ -172,7 +166,9 @@ class AgentMemory(BaseMemory):
         return data
 
     # update
-    def update(self, memory_id: str, data: str, user_id: Optional[str] = None) -> Dict[str, Any]:
+    def update(
+        self, memory_id: str, data: str, user_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         return self.memory.update(memory_id=memory_id, data=data)
 
     # deletion
@@ -180,7 +176,7 @@ class AgentMemory(BaseMemory):
         try:
             self.memory.delete(memory_id=memory_id)
             return True
-        except Exception as exc: 
+        except Exception as exc:
             logger.debug("delete_memory failed: %s", exc)
             return False
 
@@ -202,7 +198,9 @@ class AgentMemory(BaseMemory):
         memories = self.get_all(user_id)
 
         sessions = {
-            m.get("metadata", {}).get("session_id") for m in memories if m.get("metadata")
+            m.get("metadata", {}).get("session_id")
+            for m in memories
+            if m.get("metadata")
         }
         agents = {
             m.get("metadata", {}).get("agent_id") for m in memories if m.get("metadata")
@@ -287,6 +285,7 @@ class AgentMemory(BaseMemory):
         """Get all stored keys."""
         return list(self._kv.keys())
 
+
 # factory
 def create_agent_memory() -> AgentMemory:
     """Create an `AgentMemory` instance configured to use LiteLLM + Chroma."""
@@ -318,4 +317,4 @@ def create_agent_memory() -> AgentMemory:
         },
     }
 
-    return AgentMemory(config=cfg) 
+    return AgentMemory(config=cfg)

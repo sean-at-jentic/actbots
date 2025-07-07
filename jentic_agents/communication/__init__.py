@@ -1,5 +1,6 @@
 from .inbox.base_inbox import BaseInbox
 from .inbox.cli_inbox import CLIInbox
+
 # Simple escalation system
 from .hitl.base_intervention_hub import BaseInterventionHub, NoEscalation
 
@@ -20,22 +21,18 @@ __all__ = [
     # Core communication
     "BaseInbox",
     "CLIInbox",
-    
     # Controllers
     "BaseController",
     "CLIController",
-    
     # Simple escalation system
     "BaseInterventionHub",
     "CLIInterventionHub",
     "NoEscalation",
-    
     # Backward compatibility aliases
     "BaseEscalation",
     "CLIEscalation",
-    
     # Legacy HITL system (deprecated)
-    "BaseOutbox", 
+    "BaseOutbox",
     "MessageType",
-    "CLIOutbox"
+    "CLIOutbox",
 ]
