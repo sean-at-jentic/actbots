@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import re
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Callable
@@ -24,6 +23,7 @@ from ..platform.jentic_client import JenticClient
 from ..utils.llm import BaseLLM, LiteLLMChatLLM
 from ..memory.scratch_pad import ScratchPadMemory
 from ..utils.logger import get_logger
+from ..communication.hitl.base_intervention_hub import BaseInterventionHub, NoEscalation
 
 logger = get_logger(__name__)
 
@@ -55,7 +55,7 @@ class FreeformReasoner(BaseReasoner):
         model: str = "gpt-4o",
         max_iterations: int = MAX_ITERATIONS,
         include_tool_catalogue: bool = True,
-        escalation_handler: Optional[Callable[[str, str, str], str]] = None,
+        intervention_hub: Optional[BaseInterventionHub] = None,
     ) -> None:
         """Initialize the freeform reasoner.
         
@@ -66,7 +66,7 @@ class FreeformReasoner(BaseReasoner):
             model: Model name if no LLM provided
             max_iterations: Safety limit on conversation turns
             include_tool_catalogue: Whether to provide full tool list upfront
-            escalation_handler: Custom handler for human escalations (reason, question, goal) -> response
+            intervention_hub: Human intervention hub for escalations
         """
         super().__init__()
         self.jentic = jentic
@@ -74,7 +74,7 @@ class FreeformReasoner(BaseReasoner):
         self.llm = llm or LiteLLMChatLLM(model=model)
         self.max_iterations = max_iterations
         self.include_tool_catalogue = include_tool_catalogue
-        self.escalation_handler = escalation_handler or self._default_escalation_handler
+        self.intervention_hub = intervention_hub or NoEscalation()
         
         logger.info(f"Initialized FreeformReasoner with model={model}, max_iterations={max_iterations}")
 
@@ -424,37 +424,42 @@ IMPORTANT:
         logger.info(f"Reason: {reason}")
         logger.info(f"Question: {question}")
         
-        print("\n" + "="*60)
-        print("🆘 HUMAN INTERVENTION REQUESTED")
-        print("="*60)
-        print(f"The AI needs your help!")
-        print(f"\nReason: {reason}")
-        print(f"Question: {question}")
-        print("\nCurrent goal:", state.goal)
-        
-        # Show recent conversation context
-        if len(state.messages) > 2:
-            print("\nRecent context:")
-            for msg in state.messages[-3:]:
-                role = msg["role"].upper()
-                content = msg["content"][:200] + "..." if len(msg["content"]) > 200 else msg["content"]
-                print(f"{role}: {content}")
-        
-        print("\n" + "-"*60)
-        
-        # Use the configured escalation handler
-        try:
-            human_response = self.escalation_handler(reason, question, state.goal)
-            logger.info(f"Human provided response: {human_response}")
-            
-            # Return the human response as a "tool result" to continue the conversation
+        # Check if human intervention is available
+        if not self.intervention_hub.is_available():
+            logger.warning("Human intervention not available")
             return [{
                 "tool_id": "human_escalation",
                 "result": {
-                    "human_response": human_response,
+                    "human_response": "Human intervention not available - please continue with best effort.",
                     "question_asked": question,
                     "reason": reason
                 },
+                "success": False
+            }]
+        
+        # Build context for human
+        context_parts = [f"Current goal: {state.goal}", f"Reason for escalation: {reason}"]
+        
+        # Add recent conversation context
+        if len(state.messages) > 2:
+            context_parts.append("Recent context:")
+            for msg in state.messages[-3:]:
+                role = msg["role"].upper()
+                content = msg["content"][:200] + "..." if len(msg["content"]) > 200 else msg["content"]
+                context_parts.append(f"{role}: {content}")
+        
+        context = "\n".join(context_parts)
+        
+        # Use the intervention hub to ask for help
+        try:
+            human_response = self.intervention_hub.ask_human(question, context)
+            logger.info(f"Human provided response: {human_response}")
+            
+            # Return the human response as a "tool result" to continue the conversation
+            # The LLM will interpret and use the response as needed
+            return [{
+                "tool_id": "human_escalation",
+                "result": human_response,  # Direct response, no parsing
                 "success": True
             }]
             
@@ -471,13 +476,6 @@ IMPORTANT:
                 "success": False
             }]
 
-    def _default_escalation_handler(self, reason: str, question: str, goal: str) -> str:
-        """Default handler that prompts the user via console input."""
-        try:
-            human_response = input("Your response: ").strip()
-            return human_response if human_response else "Please continue without this information."
-        except (KeyboardInterrupt, EOFError):
-            return "Human unavailable - please continue with best effort."
 
     def _handle_tool_search(self, args: Dict[str, Any], state: ConversationState) -> Dict[str, Any]:
         """Handle the special jentic_tool_search pseudo-tool."""

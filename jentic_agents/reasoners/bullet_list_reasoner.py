@@ -181,7 +181,7 @@ class BulletPlanReasoner(BaseReasoner):
         model: str = "gpt-4o",
         max_iters: int = 20,
         search_top_k: int = 15,
-        escalation: Optional[BaseInterventionHub] = None,
+        intervention_hub: Optional[BaseInterventionHub] = None,
     ) -> None:
         logger.info(f"Initializing BulletPlanReasoner with model={model}, max_iters={max_iters}, search_top_k={search_top_k}")
         super().__init__()
@@ -190,7 +190,7 @@ class BulletPlanReasoner(BaseReasoner):
         self.llm = llm or LiteLLMChatLLM(model=model)
         self.max_iters = max_iters
         self.search_top_k = search_top_k
-        self.escalation = escalation or NoEscalation()
+        self.escalation = intervention_hub or NoEscalation()
         logger.info("BulletPlanReasoner initialization complete")
 
     # ------------------------------------------------------------------
@@ -199,42 +199,37 @@ class BulletPlanReasoner(BaseReasoner):
 
     def _process_llm_response_for_escalation(self, response: str, context: str = "") -> str:
         """
-        Check if LLM response contains escalation request and handle it.
+        Check if LLM response contains XML escalation request and handle it.
         
         Returns:
             Processed response (either original or human response if escalation occurred)
         """
         response = response.strip()
         
-        # Check for escalation patterns
-        escalation_patterns = [
-            r"^HUMAN:\s*(.+)",
-            r"^ASK_HUMAN:\s*(.+)", 
-            r"^ESCALATE:\s*(.+)",
-            r"^NEED_HELP:\s*(.+)"
-        ]
+        # Check for XML escalation pattern (same as FreeformReasoner)
+        escalation_pattern = r'<escalate_to_human\s+reason="([^"]+)"\s+question="([^"]+)"\s*/>'
+        match = re.search(escalation_pattern, response)
         
-        for pattern in escalation_patterns:
-            match = re.match(pattern, response, re.DOTALL)
-            if match:
-                question = match.group(1).strip()
-                logger.info(f"🤖➡️👤 LLM requested escalation: {question}")
-                
-                if self.escalation.is_available():
-                    try:
-                        human_response = self.escalation.ask_human(question, context)
-                        if human_response.strip():
-                            logger.info(f"👤➡️🤖 Human provided response: {human_response}")
-                            return human_response
-                        else:
-                            logger.warning("👤 No response from human, continuing with original")
-                    except Exception as e:
-                        logger.warning(f"Escalation failed: {e}")
-                else:
-                    logger.warning("⚠️ Escalation requested but not available")
-                
-                # Return the original response without the escalation prefix
-                return response.split(":", 1)[1].strip() if ":" in response else response
+        if match:
+            reason = match.group(1).strip()
+            question = match.group(2).strip()
+            logger.info(f"🤖➡️👤 LLM requested escalation: {reason}")
+            
+            if self.escalation.is_available():
+                try:
+                    human_response = self.escalation.ask_human(question, context)
+                    if human_response.strip():
+                        logger.info(f"👤➡️🤖 Human provided response: {human_response}")
+                        return human_response
+                    else:
+                        logger.warning("👤 No response from human, continuing with original")
+                except Exception as e:
+                    logger.warning(f"Escalation failed: {e}")
+            else:
+                logger.warning("⚠️ Escalation requested but not available")
+            
+            # Remove the escalation tag from the response
+            return re.sub(escalation_pattern, '', response).strip()
         
         return response
 
@@ -287,7 +282,7 @@ CONFIDENCE GUIDANCE:
 - For "open Discord", assume they want to send a message via Discord tools, not literally open the app
 - Only escalate if the goal has multiple genuinely different interpretations
 
-If you must escalate for clarification, start your response with: HUMAN: <your question>
+If you must escalate for clarification, use: <escalate_to_human reason="need clarification" question="your specific question"/>
 Otherwise, provide the markdown bullet plan as requested.
 """
             
@@ -445,7 +440,7 @@ SELECTION GUIDANCE:
 - Only escalate if you genuinely cannot determine which tool is appropriate
 - Make your choice decisively based on the tool descriptions
 
-If you must escalate, respond with: HUMAN: <your question>
+If you must escalate, use: <escalate_to_human reason="tool selection uncertainty" question="your specific question"/>
 Otherwise, respond with just the number of your chosen tool.
 """
         
@@ -565,7 +560,7 @@ GUIDANCE:
 - For "send message", search for "messaging" or "notification" tools
 - Only escalate if the task is genuinely incomprehensible
 
-If you must escalate, respond with: HUMAN: <your question>
+If you must escalate, use: <escalate_to_human reason="unclear task requirements" question="your specific question"/>
 Otherwise, provide the search keywords.
 """
 
@@ -670,7 +665,7 @@ PARAMETER GUIDANCE:
 - Only request human input for truly unknowable values (specific IDs, tokens, credentials)
 
 If you need specific values only the human knows, respond with: NEED_HUMAN_INPUT: [parameter names]
-If you need clarification about the task, respond with: HUMAN: <your question>
+If you need clarification about the task, use: <escalate_to_human reason="parameter clarification needed" question="your specific question"/>
 Otherwise, provide the JSON parameters confidently.
 """
         
@@ -732,29 +727,24 @@ Return ONLY the JSON object with parameters.
                         if human_reply.strip():
                             logger.info(f"👤➡️🤖 Human provided response: {human_reply}")
                             
-                            # Try to parse as JSON first
+                            # Let the LLM re-generate parameters with the human guidance
+                            guidance_prompt = f"""
+Based on this human guidance: "{human_reply}"
+
+Please generate parameters for tool {tool_id} to accomplish: {step_text}
+
+Tool schema: {json.dumps(tool_schema, indent=2)}
+Required parameters: {", ".join(required_params) if required_params else "None"}
+
+Return ONLY the JSON object with parameters. Use the human guidance to fill in the correct values.
+"""
                             try:
-                                params = json.loads(human_reply)
-                                if isinstance(params, dict):
-                                    logger.info(f"✅ Parsed human input as JSON: {list(params.keys())}")
-                                    return params
-                            except json.JSONDecodeError:
-                                pass
-                            
-                            # Fall back to key:value parsing
-                            params = {}
-                            logger.info("Parsing human response as key:value pairs")
-                            for line in human_reply.splitlines():
-                                if ":" in line:
-                                    k, v = [x.strip() for x in line.split(":", 1)]
-                                    if k:
-                                        params[k] = v
-                                        logger.info(f"✅ Set {k} = {v}")
-                            
-                            if params:
-                                return params
-                            else:
-                                logger.warning("Could not parse human response, falling back to empty params")
+                                guided_response = self.llm.chat(messages=[{"role": "user", "content": guidance_prompt}])
+                                response = guided_response.strip()
+                                logger.info("✅ LLM re-generated parameters with human guidance")
+                            except Exception as e:
+                                logger.warning(f"Failed to re-generate with human guidance: {e}")
+                                # Fallback: return empty params and let tool execution fail gracefully
                                 return {}
                         else:
                             logger.warning("👤 Human provided empty response")
@@ -828,20 +818,29 @@ Return ONLY the JSON object with parameters.
                     human_reply = self.escalation.ask_human(question, context)
                     if human_reply.strip():
                         logger.info(f"👤➡️🤖 Human provided response: {human_reply}")
+                        
+                        # Let the LLM interpret the human response and update parameters
+                        update_prompt = f"""
+Based on this human response: "{human_reply}"
+
+Current parameters: {json.dumps(params, indent=2)}
+
+Please update the parameters using the human guidance. Return the complete updated parameter object as JSON.
+
+Tool schema: {json.dumps(tool_schema, indent=2)}
+"""
                         try:
-                            human_params = json.loads(human_reply)
-                            if isinstance(human_params, dict):
-                                params.update(human_params)
-                                logger.info(f"✅ Updated parameters with human input: {list(human_params.keys())}")
-                        except json.JSONDecodeError:
-                            # Accept simple "key: value" per line as a fallback
-                            logger.info("Parsing human response as key:value pairs")
-                            for line in human_reply.splitlines():
-                                if ":" in line:
-                                    k, v = [x.strip() for x in line.split(":", 1)]
-                                    if k:
-                                        params[k] = v
-                                        logger.info(f"✅ Set {k} = {v}")
+                            updated_response = self.llm.chat(messages=[{"role": "user", "content": update_prompt}])
+                            if updated_response.startswith("```json"):
+                                updated_response = updated_response[7:]
+                            if updated_response.endswith("```"):
+                                updated_response = updated_response[:-3]
+                            updated_params = json.loads(updated_response.strip())
+                            if isinstance(updated_params, dict):
+                                params.update(updated_params)
+                                logger.info(f"✅ Updated parameters with LLM interpretation of human input")
+                        except Exception as parse_err:
+                            logger.warning(f"Failed to parse LLM interpretation of human response: {parse_err}")
                     else:
                         logger.warning("👤 Human provided empty response")
                 except Exception as esc_err:
@@ -970,9 +969,8 @@ Return ONLY the JSON object with parameters.
 You are an AI agent reflecting on a failed step. You have several options:
 
 1. Try a different approach: TRY: <revised step description>
-2. Ask for human guidance: HUMAN: <your question>
+2. Ask for human guidance: <escalate_to_human reason="step failure" question="your specific question"/>
 3. Skip this step: SKIP
-4. Request human debugging help: ESCALATE: <question for human>
 
 Failed step: {current_step.text}
 Error: {err_msg}
@@ -1011,22 +1009,6 @@ Phase: Reflection
                 current_step.status = "pending"
                 current_step.tool_id = None
                 return True
-                
-            elif response.startswith("ESCALATE:") and self.escalation.is_available():
-                question = response[9:].strip()
-                logger.info(f"Agent chose to escalate with question: {question}")
-                
-                human_response = self._request_human_help(question, context)
-                
-                if human_response.strip():
-                    logger.info(f"Human provided guidance: {human_response}")
-                    current_step.text = human_response
-                    current_step.status = "pending"
-                    current_step.tool_id = None
-                    return True
-                else:
-                    logger.warning("No human response received, trying fallback approach")
-                    return self._try_fallback_approach(current_step)
                     
             elif response.startswith("SKIP"):
                 logger.info("Agent chose to skip this step")
@@ -1155,8 +1137,8 @@ Phase: Reflection
 
 ESCALATION OPTION:
 If you need clarification about the task or additional information to complete it,
-you can ask for help by responding with:
-HUMAN: <your question>
+you can ask for help by using:
+<escalate_to_human reason="reasoning clarification needed" question="your specific question"/>
 
 Otherwise, provide the result as specified above.
 """
@@ -1344,7 +1326,7 @@ Do you want to ask a human for guidance at this point? You have full autonomy to
 - Any other reason you think human input would be helpful
 
 Respond with:
-- HUMAN: <your question> - to ask for guidance
+- <escalate_to_human reason="your reason" question="your specific question"/> - to ask for guidance
 - CONTINUE - to proceed without asking
 
 Your choice:"""

@@ -36,6 +36,7 @@ from jentic_agents.communication.hitl.cli_intervention_hub import CLIInterventio
 from jentic_agents.memory.scratch_pad import ScratchPadMemory
 from jentic_agents.platform.jentic_client import JenticClient
 from jentic_agents.reasoners.bullet_list_reasoner import BulletPlanReasoner
+from jentic_agents.reasoners.freeform_reasoner import FreeformReasoner
 from jentic_agents.reasoners.standard_reasoner import StandardReasoner
 # Local LiteLLM wrapper
 from jentic_agents.utils.llm import LiteLLMChatLLM
@@ -97,7 +98,7 @@ def main():
             jentic=jentic_client,
             memory=memory,
             llm=llm_wrapper,
-            escalation=escalation_hub,
+            intervention_hub=escalation_hub,
         )
 
         # 3. Initialize Memory and Inbox
