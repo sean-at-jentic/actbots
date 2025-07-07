@@ -2,11 +2,14 @@
 Abstract base class for AI agents that compose reasoner, memory, inbox, and Jentic client.
 """
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Optional
 
 from ..reasoners.base_reasoner import BaseReasoner, ReasoningResult
 from ..memory.base_memory import BaseMemory
 from ..communication.inbox.base_inbox import BaseInbox
+from ..communication.hitl.base_intervention_hub import BaseInterventionHub
+from ..communication.outbox.base_outbox import BaseOutbox
+from ..communication.base_controller import BaseController
 from ..platform.jentic_client import JenticClient
 
 
@@ -17,7 +20,7 @@ class BaseAgent(ABC):
     Composes:
     - Reasoner: Implements the reasoning loop logic
     - Memory: Stores and retrieves information across sessions
-    - Inbox: Receives goals/tasks from various sources
+    - Communication: Inbox/outbox/intervention hub for user interaction
     - JenticClient: Interface to Jentic workflows and tools
     
     Concrete agents override I/O methods while inheriting core behavior.
@@ -27,8 +30,14 @@ class BaseAgent(ABC):
         self,
         reasoner: BaseReasoner,
         memory: BaseMemory,
-        inbox: BaseInbox,
-        jentic_client: JenticClient
+        jentic_client: Optional[JenticClient] = None,
+        *,
+        # Option 1: Single controller (preferred)
+        controller: Optional[BaseController] = None,
+        # Option 2: Individual components (backward compatible)
+        inbox: Optional[BaseInbox] = None,
+        intervention_hub: Optional[BaseInterventionHub] = None,
+        outbox: Optional[BaseOutbox] = None,
     ):
         """
         Initialize agent with core components.
@@ -36,13 +45,35 @@ class BaseAgent(ABC):
         Args:
             reasoner: Reasoning loop implementation
             memory: Memory backend for storing information
-            inbox: Source of goals/tasks
             jentic_client: Interface to Jentic platform
+            controller: Communication controller (preferred - aggregates inbox/outbox/intervention_hub)
+            inbox: Source of goals/tasks (if not using controller)
+            intervention_hub: Human-in-the-loop interface (if not using controller)
+            outbox: Result/progress delivery system (if not using controller)
         """
         self.reasoner = reasoner
         self.memory = memory
-        self.inbox = inbox
         self.jentic_client = jentic_client
+        
+        # Set up communication channels
+        if controller:
+            self.controller = controller
+            self.inbox = controller.inbox
+            self.intervention_hub = controller.intervention_hub
+            self.outbox = controller.outbox
+        else:
+            self.controller = None
+            self.inbox = inbox
+            self.intervention_hub = intervention_hub
+            self.outbox = outbox
+
+        # Sync the intervention hub with the reasoner (if supported)
+        if self.intervention_hub is not None and hasattr(self.reasoner, "escalation"):
+            try:
+                self.reasoner.escalation = self.intervention_hub
+            except Exception:
+                # Reasoner may not allow assignment; ignore silently
+                pass
     
     @abstractmethod
     def spin(self) -> None:
@@ -107,3 +138,17 @@ class BaseAgent(ABC):
             True if agent should keep running, False to stop
         """
         pass
+    
+    def close(self) -> None:
+        """
+        Clean up agent resources.
+        
+        Closes communication channels and other resources.
+        """
+        if self.controller:
+            self.controller.close()
+        else:
+            if self.inbox:
+                self.inbox.close()
+            if self.outbox:
+                self.outbox.close()

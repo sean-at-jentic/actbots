@@ -3,13 +3,7 @@ Interactive CLI agent that reads goals from stdin and outputs to stdout.
 Provides command-line interface for goal input and execution.
 """
 import logging
-import sys
-from typing import Any, Dict
-
-from rich.console import Console
-from rich.panel import Panel
-from rich.text import Text
-from rich.table import Table
+from typing import Any
 
 from .base_agent import BaseAgent
 from ..reasoners.base_reasoner import ReasoningResult
@@ -22,42 +16,14 @@ class InteractiveCLIAgent(BaseAgent):
     Interactive command-line agent.
     
     Reads goals from the CLI inbox, processes them using the reasoner,
-    and outputs results to stdout. Supports commands like help and quit.
+    and outputs results via the CLI outbox. All UI concerns are delegated
+    to the controller components.
     """
     
     def __init__(self, *args, **kwargs):
         """Initialize the interactive CLI agent."""
         super().__init__(*args, **kwargs)
         self._running = False
-        self.console = Console()
-        self._commands = self._setup_commands()
-        self._history = []
-    
-    def _setup_commands(self) -> Dict[str, callable]:
-        """Setup available CLI commands."""
-        return {
-            "help": self._handle_help_command,
-            "quit": self._handle_exit_command,
-            "exit": self._handle_exit_command,
-            "history": self._handle_history_command,
-        }
-    
-    def _display_welcome(self) -> None:
-        """Display welcome message and instructions."""
-        welcome_text = Text()
-        welcome_text.append("🤖 Jentic ActBots Framework", style="bold blue")
-        welcome_text.append("\n\n")
-        welcome_text.append("Type 'help' for available commands or enter your goal directly.")
-        welcome_text.append("\nType 'quit' to exit.")
-        
-        panel = Panel(
-            welcome_text,
-            title="Welcome to ActBots",
-            border_style="blue",
-            padding=(1, 2)
-        )
-        
-        self.console.print(panel)
     
     def spin(self) -> None:
         """
@@ -66,64 +32,48 @@ class InteractiveCLIAgent(BaseAgent):
         Continues until the inbox is closed or an exit command is received.
         """
         logger.info("Starting InteractiveCLIAgent")
-        self._display_welcome()
+        
+        # Show welcome message via outbox
+        if hasattr(self.outbox, 'display_welcome'):
+            self.outbox.display_welcome()
         
         self._running = True
         
         try:
             while self.should_continue():
-                # Get user input
-                user_input = self._get_user_input()
+                # Get next goal from inbox (handles commands internally)
+                goal = self.inbox.get_next_goal()
                 
-                if not user_input.strip():
-                    continue
+                if goal is None:
+                    break
                 
-                # Process command or goal
-                self._process_input(user_input)
+                # Process the goal
+                self._handle_goal(goal)
                 
         except KeyboardInterrupt:
-            self.console.print("\n[yellow]Interrupted by user. Goodbye![/yellow]")
+            logger.info("Interrupted by user")
         
         finally:
             self._running = False
-            self.inbox.close()
+            self.close()
             logger.info("InteractiveCLIAgent stopped")
-    
-    def _get_user_input(self) -> str:
-        """Get user input."""
-        try:
-            self.console.print("[bold blue]ActBots[/bold blue]: ", end="")
-            return input().strip()
-        except (KeyboardInterrupt, EOFError):
-            return "quit"
-    
-    def _process_input(self, user_input: str) -> None:
-        """Process user input as command or goal."""
-        # Add to history
-        self._history.append(user_input)
-        
-        # Check if input is a command
-        parts = user_input.strip().split(None, 1)
-        command = parts[0].lower() if parts else ""
-        args = parts[1] if len(parts) > 1 else ""
-        
-        if command in self._commands:
-            self._commands[command](args)
-        else:
-            # Process as goal
-            self._handle_goal(user_input)
     
     def _handle_goal(self, goal: str) -> None:
         """Handle goal execution."""
         try:
+            # Notify outbox that goal processing has started
+            if hasattr(self.outbox, 'display_goal_start'):
+                self.outbox.display_goal_start(goal)
+            
             # Process the goal
-            self.console.print(f"[green]Processing goal:[/green] {goal}")
+            result = self.process_goal(goal)
             
-            with self.console.status("[bold green]Processing...") as status:
-                result = self.process_goal(goal)
-            
-            # Handle output
-            self.handle_output(result)
+            # Display result via outbox
+            if hasattr(self.outbox, 'display_reasoning_result'):
+                self.outbox.display_reasoning_result(result)
+            else:
+                # Fallback to standard outbox method
+                self.handle_output(result)
             
             # Acknowledge successful processing
             self.inbox.acknowledge_goal(goal)
@@ -132,72 +82,13 @@ class InteractiveCLIAgent(BaseAgent):
             error_msg = f"Error processing goal: {str(e)}"
             logger.error(error_msg)
             
-            error_text = Text()
-            error_text.append("❌ Goal Failed\n", style="bold red")
-            error_text.append(f"Goal: {goal}\n")
-            error_text.append(f"Error: {error_msg}\n", style="red")
-            
-            panel = Panel(
-                error_text,
-                title="Error",
-                border_style="red",
-                padding=(1, 2)
-            )
-            self.console.print(panel)
+            # Display error via outbox
+            if hasattr(self.outbox, 'display_goal_error'):
+                self.outbox.display_goal_error(goal, error_msg)
             
             # Reject the goal
             self.inbox.reject_goal(goal, error_msg)
-    
-    def _handle_help_command(self, args: str) -> None:
-        """Handle help command."""
-        help_text = Text()
-        help_text.append("Available Commands:\n", style="bold blue")
-        help_text.append("\n")
-        help_text.append("<goal description>", style="green")
-        help_text.append(" - Execute a goal with the given description\n")
-        help_text.append("history", style="green")
-        help_text.append(" - Show command history\n")
-        help_text.append("help", style="green")
-        help_text.append(" - Show this help message\n")
-        help_text.append("exit/quit", style="green")
-        help_text.append(" - Exit the CLI agent\n")
-        help_text.append("\n")
-        help_text.append("Examples:\n", style="bold yellow")
-        help_text.append("Find information about machine learning\n", style="cyan")
-        help_text.append("Summarize the text in file.txt\n", style="cyan")
-        help_text.append("Create a plan for my project\n", style="cyan")
-        
-        panel = Panel(
-            help_text,
-            title="Help",
-            border_style="blue",
-            padding=(1, 2)
-        )
-        
-        self.console.print(panel)
-    
-    def _handle_exit_command(self, args: str) -> None:
-        """Handle exit command."""
-        self.console.print("[yellow]Shutting down CLI agent...[/yellow]")
-        self._running = False
-    
-    def _handle_history_command(self, args: str) -> None:
-        """Handle history command."""
-        if not self._history:
-            self.console.print("[yellow]No command history available[/yellow]")
-            return
-        
-        table = Table(title="Command History", show_header=True, header_style="bold blue")
-        table.add_column("#", style="cyan", width=4)
-        table.add_column("Command", style="white")
-        
-        # Show last 20 commands
-        recent_history = self._history[-20:]
-        for i, command in enumerate(recent_history, 1):
-            table.add_row(str(i), command)
-        
-        self.console.print(table)
-    
+
     def handle_input(self, input_data: Any) -> str:
         """
         Handle input from the user/environment.
@@ -217,46 +108,14 @@ class InteractiveCLIAgent(BaseAgent):
         """
         Handle output to the user/environment.
         
-        Formats and prints the reasoning result to stdout using rich formatting.
+        Delegates to outbox for display. This is a fallback for outboxes
+        that don't have display_reasoning_result method.
         
         Args:
             result: Reasoning result to present
         """
-        if result.success:
-            # Success panel
-            success_text = Text()
-            success_text.append("✅ Goal Completed Successfully\n", style="bold green")
-            success_text.append(f"{result.final_answer}\n")
-            
-            if result.tool_calls:
-                success_text.append(f"\nUsed {len(result.tool_calls)} tool(s) in {result.iterations} iteration(s):\n", style="dim")
-                for i, call in enumerate(result.tool_calls, 1):
-                    tool_name = call.get('tool_name', call.get('tool_id', 'Unknown'))
-                    success_text.append(f"  {i}. {tool_name}\n", style="dim")
-            
-            panel = Panel(
-                success_text,
-                title="Success",
-                border_style="green",
-                padding=(1, 2)
-            )
-            self.console.print(panel)
-        else:
-            # Error panel
-            error_text = Text()
-            error_text.append("❌ Goal Failed\n", style="bold red")
-            error_text.append(f"{result.final_answer}\n")
-            
-            if result.error_message:
-                error_text.append(f"Error: {result.error_message}\n", style="red")
-            
-            panel = Panel(
-                error_text,
-                title="Error",
-                border_style="red",
-                padding=(1, 2)
-            )
-            self.console.print(panel)
+        # Use standard outbox method as fallback
+        self.outbox.send_result("latest", result.final_answer, result.success)
     
     def should_continue(self) -> bool:
         """
@@ -265,7 +124,7 @@ class InteractiveCLIAgent(BaseAgent):
         Returns:
             True if agent should keep running, False to stop
         """
-        return self._running
+        return self._running and self.inbox.has_goals()
     
     def stop(self) -> None:
         """Stop the agent gracefully."""
