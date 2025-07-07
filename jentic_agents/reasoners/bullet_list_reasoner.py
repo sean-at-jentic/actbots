@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # local utils
-from ..utils.json_cleanser import strip_backtick_fences, cleanse
+from ..utils.parsing_utils import strip_backtick_fences, cleanse, extract_fenced_code, safe_json_loads, resolve_placeholders
 from .base_reasoner import BaseReasoner
 from ..platform.jentic_client import JenticClient  # local wrapper, not the raw SDK
 from ..utils.llm import BaseLLM, LiteLLMChatLLM
@@ -444,7 +444,7 @@ class BulletPlanReasoner(BaseReasoner):
             response = self.llm.chat(messages=messages)
             logger.info(f"LLM planning response:\n{response}")
             # The plan is inside a markdown code fence.
-            plan_md = self._extract_fenced_code(response)
+            plan_md = extract_fenced_code(response)
             state.plan = parse_bullet_plan(plan_md)
             logger.info(f"Generated plan with {len(state.plan)} steps:")
             for i, step in enumerate(state.plan):
@@ -611,7 +611,7 @@ class BulletPlanReasoner(BaseReasoner):
         
         try:
             logger.info("Parsing JSON parameters")
-            args: Dict[str, Any] = self._safe_json_loads(args_json)
+            args: Dict[str, Any] = safe_json_loads(args_json)
             logger.debug(f"Parsed args: {args}")
         except ValueError as e:
             logger.error(f"Failed to parse JSON args: {e}")
@@ -632,7 +632,7 @@ class BulletPlanReasoner(BaseReasoner):
             args_json = self.llm.chat(messages=messages)
             logger.info(f"LLM parameter response (re-prompt):\n{args_json}")
             try:
-                args: Dict[str, Any] = self._safe_json_loads(args_json)
+                args: Dict[str, Any] = safe_json_loads(args_json)
                 logger.debug(f"Parsed args after re-prompt: {args}")
             except ValueError as e:
                 logger.error(f"Failed to parse JSON args after re-prompt: {e}")
@@ -641,7 +641,7 @@ class BulletPlanReasoner(BaseReasoner):
 
         # Host‑side memory placeholder substitution (simple impl)
         logger.info("Resolving memory placeholders")
-        concrete_args = self._resolve_placeholders(args)
+        concrete_args = resolve_placeholders(args, self.memory.resolve_placeholders)
         logger.debug(f"Concrete args after placeholder resolution: {concrete_args}")
 
         logger.info(f"Executing tool {tool_id} with selected arguments.")
@@ -916,19 +916,18 @@ class BulletPlanReasoner(BaseReasoner):
             if processed_reply != reply:
                 # Human provided guidance, use it as the reasoning result
                 logger.info("Reasoning step escalated, using human guidance as result")
-                return self._resolve_placeholders(processed_reply)
+                return resolve_placeholders(processed_reply, self.memory.resolve_placeholders)
 
             # Attempt to parse JSON result if present. If successful, resolve
             # placeholders within the structure. Otherwise, resolve on the raw string.
             if processed_reply.startswith("{") and processed_reply.endswith("}"):
                 try:
                     parsed_json = json.loads(processed_reply)
-                    return self._resolve_placeholders(parsed_json)
+                    return resolve_placeholders(parsed_json, self.memory.resolve_placeholders)
                 except json.JSONDecodeError:
                     # Not valid JSON, fall through to treat as a raw string
                     pass
-        
-            return self._resolve_placeholders(processed_reply)
+            return resolve_placeholders(processed_reply, self.memory.resolve_placeholders)
         except Exception as exc:  # noqa: BLE001
             logger.error("Reasoning step failed: %s", exc)
             return f"Error during reasoning: {exc}"
@@ -1177,58 +1176,3 @@ Your choice:"""
             # No human guidance in memory yet
             pass
         return base_prompt
-
-    # ------------------------------------------------------------------
-    # Helper utilities
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _extract_fenced_code(text: str) -> str:
-        """Return the first triple‑backtick‑fenced block, else raise."""
-        logger.debug("Extracting fenced code from text")
-        m = re.search(r"```[\s\S]+?```", text)
-        if not m:
-            logger.error("No fenced plan in LLM response")
-            raise RuntimeError("No fenced plan in LLM response")
-        fenced = m.group(0)
-        logger.debug(f"Found fenced block: {fenced}")
-        
-        # Remove opening and closing fences (```)
-        inner = fenced.strip("`")  # remove all backticks at ends
-        # After stripping, drop any leading language hint (e.g. ```markdown)
-        if "\n" in inner:
-            inner = inner.split("\n", 1)[1]  # drop first line (language) if present
-        # Remove trailing fence that may remain after stripping leading backticks
-        if inner.endswith("```"):
-            inner = inner[:-3]
-        result = inner.strip()
-        logger.debug(f"Extracted inner content: {result}")
-        return result
-
-    def _safe_json_loads(self, text: str) -> Dict[str, Any]:
-        """Parse JSON even if the LLM wrapped it in a Markdown fence."""
-        logger.debug(f"Parsing JSON from text: {text}")
-        text = strip_backtick_fences(text.strip())
-        try:
-            result = json.loads(text or "{}")
-            logger.debug(f"Parsed JSON result: {result}")
-            return result
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse JSON: {e}")
-            raise ValueError(f"Failed to parse JSON: {e}\n{text}")
-
-    def _resolve_placeholders(self, obj: Any) -> Any:
-        """Delegate placeholder resolution to ScratchPadMemory."""
-        logger.debug(f"Resolving placeholders in: {obj}")
-        try:
-            result = self.memory.resolve_placeholders(obj)
-
-            # --- sanitize any strings that still include markdown code fences ---
-            sanitized = cleanse(result)
-            logger.debug(f"Placeholder resolution result: {sanitized}")
-            return sanitized
-        except KeyError as e:
-            logger.warning(f"Memory placeholder resolution failed: {e}")
-            logger.warning("Continuing with unresolved placeholders - this may cause tool execution to fail")
-            # Return the original object with unresolved placeholders
-            return obj

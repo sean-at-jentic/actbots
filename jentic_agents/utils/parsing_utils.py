@@ -4,9 +4,12 @@ from JSON strings and for recursively cleaning nested data structures.
 
 from __future__ import annotations
 
-from typing import Any, List
+from typing import Any, List, Callable, Dict
 
-__all__: List[str] = ["strip_backtick_fences", "cleanse", "unwrap_singleton_json"]
+__all__: List[str] = ["strip_backtick_fences", "cleanse", "unwrap_singleton_json", "extract_fenced_code", "safe_json_loads", "resolve_placeholders"]
+
+import re
+import json
 
 
 def unwrap_singleton_json(text: str) -> str | Any:
@@ -63,4 +66,38 @@ def cleanse(obj: Any) -> Any:
         return [cleanse(v) for v in obj]
     if isinstance(obj, dict):
         return {k: cleanse(v) for k, v in obj.items()}
-    return obj 
+    return obj
+
+
+def extract_fenced_code(text: str) -> str:
+    """Return the first triple-backtick-fenced block, else raise."""
+    m = re.search(r"```[\s\S]+?```", text)
+    if not m:
+        raise RuntimeError("No fenced code block found in text")
+    fenced = m.group(0)
+    # Remove opening and closing fences (```)
+    inner = fenced.strip("`")  # remove all backticks at ends
+    # After stripping, drop any leading language hint (e.g. ```markdown)
+    if "\n" in inner:
+        inner = inner.split("\n", 1)[1]  # drop first line (language) if present
+    # Remove trailing fence that may remain after stripping leading backticks
+    if inner.endswith("```"):
+        inner = inner[:-3]
+    return inner.strip()
+
+def safe_json_loads(text: str) -> Dict:
+    """Parse JSON even if wrapped in a Markdown fence."""
+    s = strip_backtick_fences(text.strip())
+    try:
+        return json.loads(s or "{}")
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Failed to parse JSON: {e}\n{s}")
+
+def resolve_placeholders(obj: Any, resolver: Callable[[Any], Any]) -> Any:
+    """Recursively resolve placeholders in obj using the provided resolver function."""
+    try:
+        result = resolver(obj)
+        return cleanse(result)
+    except KeyError:
+        # Return the original object with unresolved placeholders
+        return obj 
