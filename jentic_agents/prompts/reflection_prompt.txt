@@ -7,9 +7,12 @@
     "history": "{history}"
   },
   "rules": [
-    "Analyze the failed step and error message.",
-    "Suggest a revised step that addresses the failure and can be retried.",
-    "If the failure is unrecoverable, respond with 'AUTH_FAILURE' or a clear signal.",
-    "Do not include any explanation or extra text."
+    "Analyze the failed step and error message carefully.",
+    "If you need critical information that is missing (like channel_id, user credentials, API keys, etc.), use escalation: <escalate_to_human reason=\"Missing critical information\" question=\"What specific information do I need?\"/>",
+    "If the error indicates missing required parameters that you cannot determine, escalate to ask a human for guidance.",
+    "If you can fix the step with a different approach, suggest a revised step that addresses the failure.",
+    "If the failure is unrecoverable (like AUTH_FAILURE), respond with 'AUTH_FAILURE'.",
+    "Focus on the root cause, not just formatting issues.",
+    "Do not include any explanation or extra text beyond the revised step or escalation request."
   ]
 }

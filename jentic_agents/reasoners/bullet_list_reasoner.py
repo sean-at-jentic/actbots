@@ -234,7 +234,10 @@ class BulletPlanReasoner(BaseReasoner):
             else:
                 prompt = kw_template.format(context_text=step.text)
 
-            reply = self.llm.chat([{"role": "user", "content": prompt}]).strip()
+            # Add human guidance context if available
+            context_aware_prompt = self._add_human_guidance_to_prompt(prompt)
+
+            reply = self.llm.chat([{"role": "user", "content": context_aware_prompt}]).strip()
             if reply:
                 logger.info("LLM keyword-extraction produced query: %s", reply)
                 return reply
@@ -370,6 +373,22 @@ class BulletPlanReasoner(BaseReasoner):
                     human_response = self.escalation.ask_human(question, context)
                     if human_response.strip():
                         logger.info(f"👤➡️🤖 Human provided response: {human_response}")
+                        
+                        # Store human guidance in memory for future LLM calls to reference
+                        guidance_key = f"human_guidance_{len(self.memory.keys())}"  # Unique key
+                        self.memory.set(
+                            key=guidance_key,
+                            value=human_response,
+                            description=f"Human guidance for: {question}"
+                        )
+                        # Also store the latest guidance under a well-known key
+                        self.memory.set(
+                            key="human_guidance_latest",
+                            value=human_response,
+                            description=f"Latest human guidance: {question}"
+                        )
+                        logger.info(f"Stored human guidance in memory: {guidance_key}")
+                        
                         return human_response
                     else:
                         logger.warning("👤 No response from human, continuing with original")
@@ -512,7 +531,9 @@ class BulletPlanReasoner(BaseReasoner):
             )
 
         try:
-            response = self.llm.chat(messages=[{"role": "user", "content": prompt}])
+            # Add human guidance context if available
+            context_aware_prompt = self._add_human_guidance_to_prompt(prompt)
+            response = self.llm.chat(messages=[{"role": "user", "content": context_aware_prompt}])
             raw_reply = response.strip()
             num_match = re.search(r"(\d+)", raw_reply)
             if num_match:
@@ -589,7 +610,9 @@ class BulletPlanReasoner(BaseReasoner):
             )
         logger.debug(f"Parameter generation prompt:\n{prompt}")
 
-        messages = [{"role": "user", "content": prompt}]
+        # Add human guidance context if available
+        context_aware_prompt = self._add_human_guidance_to_prompt(prompt)
+        messages = [{"role": "user", "content": context_aware_prompt}]
         logger.info("Calling LLM for parameter generation")
         args_json = self.llm.chat(messages=messages)
         logger.info(f"LLM parameter response:\n{args_json}")
@@ -611,7 +634,9 @@ class BulletPlanReasoner(BaseReasoner):
             explicit_prompt = (
                 f"{prompt}\n\nIMPORTANT: You MUST include all required fields in the parameters: {', '.join(required_fields)}."
             )
-            messages = [{"role": "user", "content": explicit_prompt}]
+            # Add human guidance context for the re-prompt too
+            context_aware_explicit_prompt = self._add_human_guidance_to_prompt(explicit_prompt)
+            messages = [{"role": "user", "content": context_aware_explicit_prompt}]
             args_json = self.llm.chat(messages=messages)
             logger.info(f"LLM parameter response (re-prompt):\n{args_json}")
             try:
@@ -771,15 +796,34 @@ class BulletPlanReasoner(BaseReasoner):
             )
 
         logger.info("Calling LLM for reflection")
-        revised_step = self.llm.chat(messages=[{"role": "user", "content": prompt}]).strip()
+        # Add human guidance context if available
+        context_aware_prompt = self._add_human_guidance_to_prompt(prompt)
+        revised_step = self.llm.chat(messages=[{"role": "user", "content": context_aware_prompt}]).strip()
 
-        if "AUTH_FAILURE" in revised_step:
+        # Process for escalation during reflection
+        context = f"Step: {current_step.text}\nPhase: Reflection\nError: {err_msg}\nGoal: {state.goal}"
+        processed_step = self._process_llm_response_for_escalation(revised_step, context)
+        
+        if processed_step != revised_step:
+            # Human provided guidance during reflection
+            logger.info("Reflection escalated to human, using human guidance")
+            # Instead of replacing step text, revise it to incorporate human guidance
+            if current_step.text.lower().startswith("execute") or "channel" in current_step.text.lower():
+                # For execution steps, try to integrate the human response contextually
+                current_step.text = f"Execute Discord operation with channel_id: {processed_step}"
+            else:
+                current_step.text = processed_step
+            current_step.status = "pending"
+            current_step.tool_id = None
+            return True
+
+        if "AUTH_FAILURE" in processed_step:
             logger.error("Reflection indicates an unrecoverable authentication failure.")
             return False
 
-        if revised_step:
-            logger.info(f"LLM revised step from '{current_step.text}' to '{revised_step}'")
-            current_step.text = revised_step
+        if processed_step:
+            logger.info(f"LLM revised step from '{current_step.text}' to '{processed_step}'")
+            current_step.text = processed_step
             current_step.status = "pending"
             current_step.tool_id = None
             return True
@@ -868,7 +912,9 @@ class BulletPlanReasoner(BaseReasoner):
             )
 
         try:
-            reply = self.llm.chat(messages=[{"role": "user", "content": reasoning_prompt}]).strip()
+            # Add human guidance context if available
+            context_aware_reasoning_prompt = self._add_human_guidance_to_prompt(reasoning_prompt)
+            reply = self.llm.chat(messages=[{"role": "user", "content": context_aware_reasoning_prompt}]).strip()
             logger.debug("Reasoning LLM reply: %s", reply)
 
             # Process for escalation
@@ -1010,6 +1056,16 @@ class BulletPlanReasoner(BaseReasoner):
 
                 self.observe(result, state)
                 
+                # Check if the step failed after observation and trigger reflection
+                if state.failed and current_step.status == "failed":
+                    logger.info("Step failed after observation, attempting reflection.")
+                    error_msg = getattr(current_step.result, 'error', str(current_step.result)) if hasattr(current_step.result, 'error') else str(current_step.result)
+                    if self.reflect(current_step, error_msg, state):
+                        logger.info("Step revised after failure, retrying.")
+                        state.failed = False
+                    else:
+                        logger.warning("Reflection failed after step failure. Ending reasoning loop.")
+                
             except Exception as e:  # noqa: BLE001
                 logger.error(f"Step execution failed: {e}")
                 logger.info("Attempting reflection on failed step.")
@@ -1112,6 +1168,23 @@ Your choice:"""
             logger.warning(f"Proactive escalation check failed: {e}")
         
         return False
+
+    # ------------------------------------------------------------------
+    # Human guidance integration helpers
+    # ------------------------------------------------------------------
+    
+    def _add_human_guidance_to_prompt(self, base_prompt: str) -> str:
+        """Add recent human guidance from memory to prompts."""
+        try:
+            # Get latest human guidance from memory
+            latest_guidance = self.memory.retrieve("human_guidance_latest")
+            if latest_guidance and latest_guidance.strip():
+                guidance_section = f"\n\nRECENT HUMAN GUIDANCE: {latest_guidance}\n"
+                return base_prompt + guidance_section
+        except KeyError:
+            # No human guidance in memory yet
+            pass
+        return base_prompt
 
     # ------------------------------------------------------------------
     # Helper utilities
