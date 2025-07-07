@@ -6,7 +6,8 @@ import logging
 import sys
 from typing import Any, Dict
 
-from rich.console import Console
+# Use the shared console instance across components to avoid clashing Live renders.
+from ..utils.shared_console import console as shared_console
 from rich.panel import Panel
 from rich.text import Text
 from rich.table import Table
@@ -29,7 +30,8 @@ class InteractiveCLIAgent(BaseAgent):
         """Initialize the interactive CLI agent."""
         super().__init__(*args, **kwargs)
         self._running = False
-        self.console = Console()
+        # Use the shared console for all output and status handling.
+        self.console = shared_console
         self._commands = self._setup_commands()
         self._history = []
     
@@ -86,7 +88,7 @@ class InteractiveCLIAgent(BaseAgent):
         
         finally:
             self._running = False
-            self.inbox.close()
+            self.close()
             logger.info("InteractiveCLIAgent stopped")
     
     def _get_user_input(self) -> str:
@@ -116,11 +118,10 @@ class InteractiveCLIAgent(BaseAgent):
     def _handle_goal(self, goal: str) -> None:
         """Handle goal execution."""
         try:
-            # Process the goal
-            self.console.print(f"[green]Processing goal:[/green] {goal}")
-            
-            with self.console.status("[bold green]Processing...") as status:
-                result = self.process_goal(goal)
+            # Process the goal (no spinner to avoid conflicts with human input)
+            self.console.print(f"[green]Processing goal:[/green] {goal}  [dim](working...)[/dim]")
+
+            result = self.process_goal(goal)
             
             # Handle output
             self.handle_output(result)

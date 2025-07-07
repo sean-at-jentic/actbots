@@ -34,8 +34,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from jentic_agents.agents.interactive_cli_agent import InteractiveCLIAgent
 from jentic_agents.agents.simple_ui_agent import SimpleUIAgent
+from jentic_agents.communication import CLIController
 from jentic_agents.communication.inbox.cli_inbox import CLIInbox
-from jentic_agents.communication.hitl.cli_intervention_hub import CLIInterventionHub
 from jentic_agents.memory.agent_memory import create_agent_memory
 from jentic_agents.platform.jentic_client import JenticClient
 from jentic_agents.reasoners.bullet_list_reasoner import BulletPlanReasoner
@@ -110,30 +110,30 @@ def main():
         llm_wrapper = LiteLLMChatLLM(model=model_name)
         memory = create_agent_memory()
 
-        # Initialize the CLI intervention hub for human-in-the-loop
-        escalation_hub = CLIInterventionHub()
+        # 2b. Initialize communication controller (aggregates inbox/hub/outbox)
+        controller = CLIController()
 
+        # 3. Initialize the Reasoner (intervention hub will be injected by the agent)
         reasoner = BulletPlanReasoner(
             jentic=jentic_client,
             memory=memory,
             llm=llm_wrapper,
-            intervention_hub=escalation_hub,
         )
 
-        # 3. Initialize Inbox and Agent based on mode
+        # 4. Initialize Agent based on mode
         if args.mode == "cli":
-            # CLI mode: create inbox first, then agent
-            inbox = CLIInbox(prompt="Enter your goal: ")
+            # CLI mode: Use controller pattern (preferred)
             agent = InteractiveCLIAgent(
                 reasoner=reasoner,
                 memory=memory,
-                inbox=inbox,
+                controller=controller,
                 jentic_client=jentic_client,
             )
 
         else:  # ui mode
-            # For UI mode, we don't use CLIInbox since the UI handles input directly
-            inbox = CLIInbox(prompt="Enter your goal: ")  # Still needed for interface compatibility
+            # For UI mode, we still use individual components for now
+            # (SimpleUIAgent might need its own controller in the future)
+            inbox = CLIInbox(prompt="Enter your goal: ")
             agent = SimpleUIAgent(
                 reasoner=reasoner,
                 memory=memory,

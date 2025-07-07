@@ -8,6 +8,10 @@ from .outbox.base_outbox import BaseOutbox, MessageType
 from .outbox.cli_outbox import CLIOutbox
 from .hitl.cli_intervention_hub import CLIInterventionHub
 
+# Controllers
+from .base_controller import BaseController
+from .cli_controller import CLIController
+
 # Backward compatibility aliases
 BaseEscalation = BaseInterventionHub
 CLIEscalation = CLIInterventionHub
@@ -16,6 +20,10 @@ __all__ = [
     # Core communication
     "BaseInbox",
     "CLIInbox",
+    
+    # Controllers
+    "BaseController",
+    "CLIController",
     
     # Simple escalation system
     "BaseInterventionHub",
