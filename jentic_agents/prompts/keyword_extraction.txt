@@ -14,18 +14,23 @@
   ],
   "examples": [
     {
+      "context_text": "Search New York Times articles for metadata.",
       "output": "nytimes article search metadata info"
     },
     {
+      "context_text": "Create a new lead in Salesforce CRM with contact details.",
       "output": "salesforce lead creation crm contact"
     },
     {
+      "context_text": "Create or update a task in Asana project management.",
       "output": "asana task project management create update"
     },
     {
-      "output": "slack send message channel post api"
+      "context_text": "Send a message to a Slack channel using the Slack API.",
+      "output": "slack send message channel post"
     },
     {
+      "context_text": "Fetch cards from a Trello board list.",
       "output": "trello board list cards fetch"
     }
   ]
