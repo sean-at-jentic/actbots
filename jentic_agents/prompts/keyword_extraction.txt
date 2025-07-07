@@ -4,20 +4,29 @@
     "context_text": "{context_text}"
   },
   "rules": [
-    "Generate a concise search query that describes the desired functionality.",
-    "Do not include tool names unless specified in the task.",
-    "Do not include extra explanation or formatting, just the search query.",
-    "If the task mentions a platform or API, include it in the query."
+    "Generate a concise search query using 5-7 capability-focused keywords that describe the required functionality for this step.",
+    "Include EXACTLY ONE provider keyword (e.g., 'github', 'discord', 'trello') based on the platform mentioned in the context, or omit provider entirely if platform is unclear.",
+    "Never combine multiple platforms or APIs in a single query - focus on one provider at a time.",
+    "Do not include tool names unless explicitly specified in the task.",
+    "Do not include extra explanation or formatting, just the search query string.",
+    "Base your keywords strictly on the current step, not the overall goal or future steps.",
+    "Focus on action-oriented keywords that describe what needs to be done (create, update, fetch, send, etc.)."
   ],
   "examples": [
     {
-      "output": "New York Times API for searching articles"
+      "output": "nytimes article search metadata info"
     },
     {
-      "output": "Discord API for posting messages"
+      "output": "salesforce lead creation crm contact"
     },
     {
-      "output": "Salesforce API for lead creation"
+      "output": "asana task project management create update"
+    },
+    {
+      "output": "slack send message channel post api"
+    },
+    {
+      "output": "trello board list cards fetch"
     }
   ]
 }

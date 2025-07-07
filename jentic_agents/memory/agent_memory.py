@@ -32,6 +32,7 @@ import time
 from typing import Any, Dict, List, Optional, Union
 import json
 from pathlib import Path
+import re
 
 from mem0 import Memory  
 from ..utils.logger import get_logger
@@ -70,6 +71,15 @@ class AgentMemory(BaseMemory):
         # Boot the underlying Mem0 client ------------------------------------
         self.memory = Memory.from_config(config)
         self.config = config
+
+        # ------------------------------------------------------------------
+        # Local lightweight key-value store used by higher-level helpers
+        # (BulletPlanReasoner relies on these helpers).  We keep this
+        # **in-memory only** – it is orthogonal to the vector-DB managed by
+        # Mem0 but ensures backwards-compatibility with ScratchPadMemory.
+        # ------------------------------------------------------------------
+        self._store: Dict[str, "MemoryItem"] = {}
+        self._kv: Dict[str, Any] = {}  # alias for fast look-ups – mirrors _store.value
 
     # utils
     # methods
@@ -264,34 +274,113 @@ class AgentMemory(BaseMemory):
 
         return status
 
-    # BaseMemory
-    def store(self, key: str, value: Any) -> None:  # noqa: D401 – doc handled above
-        self.add(str(value), user_id=key)
+    # ------------------------------------------------------------------
+    # ScratchPad-style convenience helpers
+    # ------------------------------------------------------------------
 
-    def retrieve(self, key: str) -> Optional[Any]:
-        memories = self.get_all(user_id=key, limit=1)
-        if memories:
-            mem = memories[0]
-            if isinstance(mem, dict):
-                return mem.get("memory") or mem.get("text")
-            return str(mem)
-        return None
+    # Import here to avoid circular import at module top
+    from .scratch_pad import MemoryItem  # type: ignore
 
-    def delete(self, key: str) -> bool:
-        return self.delete_all(user_id=key) > 0
+    _MEMORY_RE = re.compile(r"\$\{(?:\{)?memory\.([\w_\.]+)(?:\})?\}")
 
-    def clear(self) -> None:  # pragma: no cover – not used directly
-        logger.warning(
-            "AgentMemory.clear(): destructive operation not supported by Mem0; "
-            "call delete_all(user_id) instead."
-        )
+    # --- key-value API ---------------------------------------------------
 
-    def keys(self) -> List[str]:  # noqa: D401 – simple explanation
-        logger.warning(
-            "AgentMemory.keys(): Mem0 does not expose a global user list; "
-            "returning an empty list."
-        )
-        return []
+    def set(
+        self,
+        key: str,
+        value: Any,
+        description: str = "",
+        type_: str | None = None,
+        schema: Dict[str, Any] | None = None,
+    ) -> None:
+        """Mirror ScratchPadMemory.set() so existing code keeps working."""
+
+        item = self.MemoryItem(key, value, description, type_, schema)  # type: ignore[attr-defined]
+        self._store[key] = item
+        self._kv[key] = value
+
+    # Alias for ScratchPadMemory.get()
+    def get(self, key: str) -> Any:  # noqa: D401 – simple explanation
+        if key in self._store:
+            return self._store[key].value
+        return self._kv.get(key)
+
+    def has(self, key: str) -> bool:  # convenience
+        return key in self._store or key in self._kv
+
+    # --- enumeration / debugging ---------------------------------------
+
+    def enumerate_for_prompt(self) -> str:
+        """Return human-readable list of stored items for LLM prompts."""
+        if not self._store:
+            return "(memory empty)"
+        lines = ["Available memory:"]
+        for item in self._store.values():
+            lines.append(item.as_prompt_line())
+        return "\n".join(lines)
+
+    # --- placeholder resolution ----------------------------------------
+
+    def resolve_placeholders(self, obj: Any) -> Any:  # type: ignore[override]
+        """Resolve ${memory.foo.bar} placeholders recursively (ScratchPad style)."""
+
+        def _lookup(dotted_path: str) -> str:
+            key, *path = dotted_path.split(".")
+            if key in self._store:
+                item_val = self._store[key].value
+            elif key in self._kv:
+                item_val = self._kv[key]
+            else:
+                raise KeyError(f"Memory key '{key}' not found")
+
+            for part in path:
+                if isinstance(item_val, dict):
+                    item_val = item_val[part]
+                elif isinstance(item_val, (list, tuple)):
+                    item_val = item_val[int(part)]
+                else:
+                    raise KeyError(
+                        f"Cannot navigate path '{dotted_path}' – part '{part}' inaccessible"
+                    )
+
+            # Safe stringification
+            if isinstance(item_val, str):
+                return item_val
+            try:
+                return json.dumps(item_val)
+            except (TypeError, ValueError):
+                return str(item_val)
+
+        def _resolve(o: Any) -> Any:
+            if isinstance(o, str):
+                return self._MEMORY_RE.sub(lambda m: _lookup(m.group(1)), o)
+            if isinstance(o, list):
+                return [_resolve(v) for v in o]
+            if isinstance(o, dict):
+                return {k: _resolve(v) for k, v in o.items()}
+            return o
+
+        return _resolve(obj)
+
+    # ------------------------------------------------------------------
+    # Override BaseMemory low-level KV helpers to piggy-back on _kv store
+    # ------------------------------------------------------------------
+
+    def store(self, key: str, value: Any) -> None:  # type: ignore[override]
+        self._kv[key] = value
+
+    def retrieve(self, key: str) -> Optional[Any]:  # type: ignore[override]
+        return self._kv.get(key)
+
+    def delete(self, key: str) -> bool:  # type: ignore[override]
+        return self._kv.pop(key, None) is not None
+
+    def clear(self) -> None:  # type: ignore[override]
+        self._kv.clear()
+        self._store.clear()
+
+    def keys(self) -> list[str]:  # type: ignore[override]
+        return list(self._kv.keys())
 
 
 # factory

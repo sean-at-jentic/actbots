@@ -43,6 +43,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# local utils
+from ..utils.json_cleanser import strip_backtick_fences, cleanse
 from .base_reasoner import BaseReasoner
 from ..platform.jentic_client import JenticClient  # local wrapper, not the raw SDK
 from ..utils.llm import BaseLLM, LiteLLMChatLLM
@@ -80,6 +82,7 @@ class Step:
     status: str = "pending"  # pending | running | done | failed
     result: Any = None
     tool_id: Optional[str] = None  # chosen Jentic tool
+    tool_name: Optional[str] = None  # chosen tool name for logging
     reflection_attempts: int = 0  # track how many times we've tried to fix this step
 
 
@@ -100,8 +103,42 @@ BULLET_RE = re.compile(r"^(?P<indent>\s*)([-*]|\d+\.)\s+(?P<content>.+)$")
 
 
 def parse_bullet_plan(markdown: str) -> deque[Step]:
-    """Very lenient parser that turns an indented bullet list into Step objects."""
-    logger.info(f"Parsing bullet plan from markdown:\n{markdown}")
+    """Very lenient parser that turns an indented bullet list OR JSON array into Step objects."""
+    # Use shared helper for fence stripping
+    markdown_stripped = strip_backtick_fences(markdown)
+    # Now check for JSON array
+    if markdown_stripped.startswith('[') and markdown_stripped.endswith(']'):
+        try:
+            logger.info("Parsing plan as JSON array")
+            json_steps = json.loads(markdown_stripped)
+            steps = []
+            for step_data in json_steps:
+                if isinstance(step_data, dict):
+                    text = step_data.get('text', '')
+                    step_type = step_data.get('step_type', '')
+                    store_key = step_data.get('store_key')
+                    # Extract goal context from parentheses if present
+                    goal_context = None
+                    goal_match = re.search(r'\(\s*goal:\s*([^)]+)\s*\)', text)
+                    if goal_match:
+                        goal_context = goal_match.group(1).strip()
+                        # Remove the goal context from the main content
+                        text = re.sub(r'\s*\(\s*goal:[^)]+\s*\)', '', text).strip()
+                    step = Step(
+                        text=text,
+                        indent=0,  # JSON format doesn't use indentation
+                        store_key=store_key,
+                        goal_context=goal_context
+                    )
+                    # Store step_type as an attribute for later use
+                    step.step_type = step_type
+                    steps.append(step)
+            logger.info(f"Parsed {len(steps)} steps from plan (JSON mode)")
+            return deque(steps)
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse as JSON: {e}, falling back to markdown parsing")
+            # Fall through to markdown parsing
+    # Original markdown bullet parsing logic
     steps: List[Step] = []
     for line_num, line in enumerate(markdown.splitlines(), 1):
         if not line.strip():
@@ -206,86 +243,81 @@ class BulletPlanReasoner(BaseReasoner):
     def _select_tool_with_llm(
         self, step: "Step", hits: List[Dict[str, Any]], state: "ReasonerState"
     ) -> Optional[str]:
-        """
-        Asks the LLM to choose the best tool from a list of candidates.
+        """Ask the LLM to choose the best tool from `hits`.
+
+        Selection order:
+        1. Numeric index in the LLM reply (1-based).
+        2. Tool ID or name substring present in reply.
+        3. First hit whose provider (api_name domain) appears in the plan step.
+        4. Fallback to the first search hit.
         """
         if not hits:
             return None
 
-        # Format the list of tools for the LLM prompt.
-        tool_lines_list = []
-        for i, h in enumerate(hits):
-            if isinstance(h, dict):
-                name = h.get('name', h.get('id', 'Unknown'))
-                api_name = h.get('api_name')
-                description = h.get('description', '')
-                hit_id = h.get('id', 'Unknown')
-            else:
-                name = getattr(h, 'name', 'Unknown')
-                api_name = getattr(h, 'api_name', None)
-                description = getattr(h, 'description', '')
-                hit_id = getattr(h, 'id', 'Unknown')
+        # Build numbered candidate list
+        numbered_lines: List[str] = []
+        for idx, h in enumerate(hits, 1):
+            name = h.get("name") if isinstance(h, dict) else getattr(h, "name", None)
+            if not name or not str(name).strip():
+                name = h.get("id", "Unknown") if isinstance(h, dict) else getattr(h, "id", "Unknown")
+            api_name = h.get("api_name") if isinstance(h, dict) else getattr(h, "api_name", None)
+            desc = h.get("description", "") if isinstance(h, dict) else getattr(h, "description", "")
+            display = f"{name} ({api_name})" if api_name else name
+            numbered_lines.append(f"{idx}. {display} — {desc}")
+        candidate_block = "\n".join(numbered_lines)
 
-            display_name = f"{name} ({api_name})" if api_name else name
-            tool_lines_list.append(f"{i+1}. {display_name} — {description}")
-        
-        candidate_prompt = "\n".join(tool_lines_list)
-        
-        select_tool_template = self._load_prompt("select_tool")
-        if isinstance(select_tool_template, dict):
-            select_tool_template["inputs"]["goal"] = state.goal
-            select_tool_template["inputs"]["plan_step"] = step.text
-            select_tool_template["inputs"]["memory_keys"] = ", ".join(self.memory.keys())
-            select_tool_template["inputs"]["tool_candidates"] = candidate_prompt
-            prompt = json.dumps(select_tool_template, ensure_ascii=False)
+        # Fill the prompt
+        prompt_tpl = self._load_prompt("select_tool")
+        if isinstance(prompt_tpl, dict):
+            prompt_tpl["inputs"].update(
+                {
+                    "goal": state.goal,
+                    "plan_step": step.text,
+                    "memory_keys": ", ".join(self.memory.keys()),
+                    "tool_candidates": candidate_block,
+                }
+            )
+            prompt = json.dumps(prompt_tpl, ensure_ascii=False)
         else:
-            prompt = select_tool_template.format(
+            prompt = prompt_tpl.format(
                 goal=state.goal,
                 plan_step=step.text,
                 memory_keys=", ".join(self.memory.keys()),
-                tool_candidates=candidate_prompt
+                tool_candidates=candidate_block,
             )
 
-        try:
-            response = self.llm.chat(messages=[{"role": "user", "content": prompt}])
-            raw_reply = response.strip()
+        raw_reply = self.llm.chat(messages=[{"role": "user", "content": prompt}]).strip()
+        logger.debug("LLM tool-selection reply: %s", raw_reply)
 
-            # ------------------------------------------------------------------
-            # Robust parsing: accept either a bare integer or a sentence that
-            # *contains* an integer.  If no valid integer is found, fall back to
-            # heuristic API-name matching before finally defaulting to hits[0].
-            # ------------------------------------------------------------------
-            num_match = re.search(r"(\d+)", raw_reply)
-            if num_match:
-                tool_index = int(num_match.group(1)) - 1
-            else:
-                tool_index = None  # will be set by heuristics below
+        # 1️⃣ Numeric selection
+        match = re.search(r"(\d+)", raw_reply)
+        if match:
+            idx = int(match.group(1)) - 1
+            if 0 <= idx < len(hits):
+                chosen = hits[idx]
+                return chosen["id"] if isinstance(chosen, dict) else getattr(chosen, "id", "unknown")
 
-            if tool_index is not None and 0 <= tool_index < len(hits):
-                selected_tool = hits[tool_index]
-                logger.info(
-                    "LLM selected tool #%s: %s (%s)",
-                    tool_index + 1,
-                    selected_tool["id"],
-                    selected_tool.get("name", "unnamed"),
-                )
-                return selected_tool["id"]
+        # 2️⃣ ID or name substring
+        lower_reply = raw_reply.lower()
+        for h in hits:
+            hid = h["id"] if isinstance(h, dict) else getattr(h, "id", "")
+            hname = h.get("name", "") if isinstance(h, dict) else getattr(h, "name", "")
+            if hid and hid.lower() in lower_reply:
+                return hid
+            if hname and hname.lower() in lower_reply:
+                return h["id"] if isinstance(h, dict) else getattr(h, "id", "unknown")
 
-            # ----------------- Heuristic back-up -----------------------------
-            # Prefer a tool whose api_name appears in the plan step text.
-            step_text_lower = step.text.lower()
-            for hit in hits:
-                api_name = hit.get("api_name", "").lower()
-                if api_name and api_name in step_text_lower:
-                    logger.warning("Falling back to heuristic api_name match: %s", hit["id"])
-                    return hit["id"]
+        # 3️⃣ Provider heuristic
+        step_lower = step.text.lower()
+        for h in hits:
+            api_name = h.get("api_name", "").lower() if isinstance(h, dict) else getattr(h, "api_name", "").lower()
+            if api_name and api_name.split(".")[0] in step_lower:
+                return h["id"] if isinstance(h, dict) else getattr(h, "id", "unknown")
 
-            # Last resort: first search hit.
-            logger.warning("LLM tool selection failed. Using first search hit as fallback.")
-            return hits[0]["id"]
-        except (ValueError, IndexError, Exception) as e:
-            logger.error(f"Error during LLM tool selection: {e}. Falling back to first search hit.")
-            return hits[0]["id"]
+        # 4️⃣ Fallback first hit
+        first = hits[0]
+        plan_step.tool_name = first.get("name", None) if isinstance(first, dict) else getattr(first, "name", None)
+        return first["id"] if isinstance(first, dict) else getattr(first, "id", "unknown")
 
     def __init__(
         self,
@@ -349,7 +381,19 @@ class BulletPlanReasoner(BaseReasoner):
         logger.info("=== TOOL SELECTION PHASE ===")
         logger.info(f"Selecting tool for step: {plan_step.text}")
 
+        # ---- Fast path: "Execute <memory_key> ..." → reuse stored tool_id ----
+        exec_match = re.match(r"execute\s+([\w\-_]+)", plan_step.text.strip(), re.IGNORECASE)
+        if exec_match:
+            mem_key = exec_match.group(1)
+            if mem_key in self.memory.keys():
+                stored = self.memory.retrieve(mem_key)
+                if isinstance(stored, dict) and "id" in stored:
+                    logger.info(f"Reusing tool_id from memory key '{mem_key}': {stored['id']}")
+                    plan_step.tool_id = stored["id"]
+                    return stored["id"]
+
         search_query = self._build_search_query(plan_step)
+        # Only log the search query and tool candidates, not every phase or step
         logger.info(f"Search query: {search_query}")
         search_hits = self.jentic.search(search_query, top_k=self.search_top_k)
 
@@ -357,20 +401,73 @@ class BulletPlanReasoner(BaseReasoner):
             logger.error(f"No tools found for query: '{search_query}'")
             raise RuntimeError(f"No tools found for query: '{search_query}'")
 
-        logger.info(f"Jentic search returned {len(search_hits)} results")
-        # Log only the most relevant tool candidate info
-        for idx, tool in enumerate(search_hits, 1):
-            logger.info(f"Tool Candidate {idx}: Name={tool.get('name')}, Description={tool.get('description')}")
+        # Sort hits so that those whose provider (api_name or its domain) is mentioned in the plan step are at the top
+        step_text_lower = plan_step.text.lower()
+        def provider_mentioned(hit):
+            api_name = hit.get('api_name', '').lower() if isinstance(hit, dict) else getattr(hit, 'api_name', '').lower()
+            if not api_name:
+                return False
+            domain_part = api_name.split('.')[0]
+            return (api_name in step_text_lower) or (domain_part in step_text_lower)
+        search_hits = sorted(search_hits, key=lambda h: not provider_mentioned(h))
 
-        # Use the LLM to choose the best tool from the search results.
-        tool_id = self._select_tool_with_llm(plan_step, search_hits, state)
-        
-        if not tool_id:
-            logger.warning("LLM tool selection failed. Falling back to the first search hit.")
-            tool_id = search_hits[0]['id']
+        tool_names_list = []
+        tool_lines_list = []
+        for i, h in enumerate(search_hits):
+            if isinstance(h, dict):
+                name = h.get('name', h.get('id', 'Unknown'))
+                api_name = h.get('api_name')
+                description = h.get('description', '')
+                hit_id = h.get('id', 'Unknown')
+            else:
+                name = getattr(h, 'name', 'Unknown')
+                api_name = getattr(h, 'api_name', None)
+                description = getattr(h, 'description', '')
+                hit_id = getattr(h, 'id', 'Unknown')
+            display_name = f"{name} ({api_name})" if api_name else name
+            logger.info(f"  {i+1}. {display_name} (ID: {hit_id}) - {description}")
+            tool_lines_list.append(f"{i+1}. {display_name} — {description}")
+        tool_lines = "\n".join(tool_lines_list)
 
-        plan_step.tool_id = tool_id
-        return tool_id
+        select_tool_template = self._load_prompt("select_tool")
+        if isinstance(select_tool_template, dict):
+            select_tool_template["inputs"]["goal"] = state.goal
+            select_tool_template["inputs"]["plan_step"] = plan_step.text
+            select_tool_template["inputs"]["memory_keys"] = ", ".join(self.memory.keys())
+            select_tool_template["inputs"]["tool_candidates"] = tool_lines
+            prompt = json.dumps(select_tool_template, ensure_ascii=False)
+        else:
+            prompt = select_tool_template.format(
+                goal=state.goal,
+                plan_step=plan_step.text,
+                memory_keys=", ".join(self.memory.keys()),
+                tool_candidates=tool_lines
+            )
+
+        try:
+            response = self.llm.chat(messages=[{"role": "user", "content": prompt}])
+            raw_reply = response.strip()
+            num_match = re.search(r"(\d+)", raw_reply)
+            if num_match:
+                tool_index = int(num_match.group(1)) - 1
+            else:
+                tool_index = None
+            if tool_index is not None and 0 <= tool_index < len(search_hits):
+                selected_tool = search_hits[tool_index]
+                logger.info(
+                    "LLM selected tool #%s: %s (%s)",
+                    tool_index + 1,
+                    selected_tool["id"] if isinstance(selected_tool, dict) else getattr(selected_tool, 'id', 'unknown'),
+                    selected_tool.get("name", "unnamed") if isinstance(selected_tool, dict) else getattr(selected_tool, 'name', 'unnamed'),
+                )
+                # store tool name
+                plan_step.tool_name = selected_tool.get("name", None) if isinstance(selected_tool, dict) else getattr(selected_tool, "name", None)
+                return selected_tool["id"] if isinstance(selected_tool, dict) else getattr(selected_tool, 'id', 'unknown')
+            # No valid tool selected
+            raise RuntimeError("LLM tool selection failed: No valid tool index or provider match. Aborting step.")
+        except (ValueError, IndexError, Exception) as e:
+            logger.error(f"Error during LLM tool selection: {e}. Using first search hit as fallback.")
+            return search_hits[0]["id"]
 
     # 3. ACT ------------------------------------------------------------
     def act(self, tool_id: str, state: ReasonerState):
@@ -767,25 +864,65 @@ class BulletPlanReasoner(BaseReasoner):
 
             logger.info(f"Executing step: {current_step.text}")
 
-            step_type = self._classify_step(current_step, state)
-            logger.info(f"Step type: {step_type.value}")
+            # Use explicit step_type if present
+            step_type = getattr(current_step, "step_type", None)
+            if step_type:
+                logger.info(f"Step type: {step_type}")
+            else:
+                step_type_enum = self._classify_step(current_step, state)
+                step_type = step_type_enum.value.upper()
+                logger.info(f"Step type: {step_type}")
 
             try:
-                if step_type is StepType.TOOL_USING:
+                if step_type == "SEARCH":
                     tool_id = self.select_tool(current_step, state)
-                    logger.info(f"Tool selected: {tool_id}")
-
+                    logger.info(f"Tool selected: {tool_id} ({current_step.tool_name})")
+                    # Optionally store tool_id in memory if store_key is present
+                    if current_step.store_key:
+                        self.memory.set(
+                            key=current_step.store_key,
+                            value={"id": tool_id},
+                            description=f"Tool ID for step '{current_step.text}'",
+                        )
+                        logger.debug(f"Stored tool_id in memory with key '{current_step.store_key}'")
+                    result = {"tool_id": tool_id}
+                elif step_type == "EXECUTE":
+                    tool_id = self.select_tool(current_step, state)
+                    logger.info(f"Tool selected: {tool_id} ({current_step.tool_name})")
                     result = self.act(tool_id, state)
                     logger.info(f"Action result type: {type(result)}")
-
                     tool_calls.append({
                         "tool_id": tool_id,
                         "step": current_step.text,
                         "result": result,
                     })
-                else:
+                elif step_type == "REASON":
                     result = self._execute_reasoning_step(current_step, state)
                     logger.info("Reasoning step completed.")
+                elif step_type in ["TOOL_USING", "TOOL"]:  # Support both formats
+                    tool_id = self.select_tool(current_step, state)
+                    logger.info(f"Tool selected: {tool_id} ({current_step.tool_name})")
+                    result = self.act(tool_id, state)
+                    logger.info(f"Action result type: {type(result)}")
+                    tool_calls.append({
+                        "tool_id": tool_id,
+                        "step": current_step.text,
+                        "result": result,
+                    })
+                elif step_type in ["REASONING"]:  # Support both formats
+                    result = self._execute_reasoning_step(current_step, state)
+                    logger.info("Reasoning step completed.")
+                else:
+                    logger.warning(f"Unknown step_type '{step_type}', defaulting to EXECUTE.")
+                    tool_id = self.select_tool(current_step, state)
+                    logger.info(f"Tool selected: {tool_id} ({current_step.tool_name})")
+                    result = self.act(tool_id, state)
+                    logger.info(f"Action result type: {type(result)}")
+                    tool_calls.append({
+                        "tool_id": tool_id,
+                        "step": current_step.text,
+                        "result": result,
+                    })
 
                 self.observe(result, state)
                 
@@ -846,21 +983,10 @@ class BulletPlanReasoner(BaseReasoner):
         logger.debug(f"Extracted inner content: {result}")
         return result
 
-    @staticmethod
-    def _safe_json_loads(text: str) -> Dict[str, Any]:
+    def _safe_json_loads(self, text: str) -> Dict[str, Any]:
         """Parse JSON even if the LLM wrapped it in a Markdown fence."""
         logger.debug(f"Parsing JSON from text: {text}")
-        text = text.strip()
-        
-        # Check if text is wrapped in markdown code fences
-        if text.startswith("```") and "```" in text[3:]:
-            # Extract content between markdown fences
-            pattern = r"```(?:json)?\s*([\s\S]+?)\s*```"
-            match = re.search(pattern, text)
-            if match:
-                text = match.group(1).strip()
-                logger.debug(f"Removed markdown fences from JSON")
-        
+        text = strip_backtick_fences(text.strip())
         try:
             result = json.loads(text or "{}")
             logger.debug(f"Parsed JSON result: {result}")
@@ -874,12 +1000,13 @@ class BulletPlanReasoner(BaseReasoner):
         logger.debug(f"Resolving placeholders in: {obj}")
         try:
             result = self.memory.resolve_placeholders(obj)
-            logger.debug(f"Placeholder resolution result: {result}")
-            return result
+
+            # --- sanitize any strings that still include markdown code fences ---
+            sanitized = cleanse(result)
+            logger.debug(f"Placeholder resolution result: {sanitized}")
+            return sanitized
         except KeyError as e:
             logger.warning(f"Memory placeholder resolution failed: {e}")
             logger.warning("Continuing with unresolved placeholders - this may cause tool execution to fail")
             # Return the original object with unresolved placeholders
             return obj
-
-    
