@@ -55,10 +55,5 @@ jentic_agents/data
 
 # Log files
 *.log
-<<<<<<< Updated upstream
-.cursor/rules/
-tasks/
-=======
 tasks/
 .cursor/rules/
->>>>>>> Stashed changes
