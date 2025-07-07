@@ -7,6 +7,7 @@ import logging.handlers
 import os
 from pathlib import Path
 from typing import Dict, Any
+from .config import get_config_value
 
 
 class LoggerSingleton:
@@ -29,13 +30,8 @@ class LoggerSingleton:
         LoggerSingleton._initialized = True
     
     def _load_config(self) -> Dict[str, Any]:
-        """Load configuration from JSON, with fallbacks."""
-        config_path = Path(__file__).parent / "../../config.json"
-        try:
-            with open(config_path, 'r') as f:
-                return json.load(f).get('logging', {})
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {}  # Return empty if file not found or invalid
+        """Load configuration from config.json using config.py."""
+        return get_config_value('logging', default={})
     
     def _setup_logging(self) -> None:
         """Set up logging based on the loaded configuration."""

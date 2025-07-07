@@ -49,6 +49,7 @@ from jentic_agents.reasoners.freeform_reasoner import FreeformReasoner
 from jentic_agents.reasoners.standard_reasoner import StandardReasoner
 
 from jentic_agents.utils.llm import LiteLLMChatLLM
+from jentic_agents.utils.config import get_config, get_config_value
 
 logging.getLogger("litellm").setLevel(logging.WARNING)
 logging.getLogger("LiteLLM").setLevel(logging.WARNING)
@@ -77,16 +78,8 @@ def main():
         print("Type your goal below, or 'quit' to exit.")
     print("-" * 50)
 
-    config_path = os.path.join(os.path.dirname(__file__), "config.json")
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        print("ERROR: Missing config.json file.")
-        config = {}
-
-    provider = config.get("llm", {}).get("provider", "openai")
-    model_name = config.get("llm", {}).get("model", "gpt-4o")
+    provider = get_config_value("llm", "provider", default="openai")
+    model_name = get_config_value("llm", "model", default="gpt-4o")
 
     if not os.getenv("JENTIC_API_KEY"):
         print("ERROR: Missing JENTIC_API_KEY in your .env file.")

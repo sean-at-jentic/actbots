@@ -37,6 +37,7 @@ import re
 from mem0 import Memory  
 from ..utils.logger import get_logger
 from .base_memory import BaseMemory
+from ..utils.config import get_config_value
 
 
 logger = get_logger(__name__)
@@ -71,7 +72,6 @@ class AgentMemory(BaseMemory):
         self.memory = Memory.from_config(config)
         self.config = config
 
-        self._store: Dict[str, "MemoryItem"] = {}
         self._kv: Dict[str, Any] = {}  # alias for fast look-ups – mirrors _store.value
 
 
@@ -291,21 +291,14 @@ class AgentMemory(BaseMemory):
 def create_agent_memory() -> AgentMemory:
     """Create an `AgentMemory` instance configured to use LiteLLM + Chroma."""
 
-    config_file = "config.json"
-    config_path = Path(config_file)
-
+    memory_config = get_config_value("memory", default={})
     try:
-        config_data = json.loads(config_path.read_text())
-        memory_config = config_data.get("memory", {})
-        
-        # Get configuration from config file
         chroma_path = memory_config["chroma_path"]
         llm_model = memory_config["llm_model"]
         llm_provider = memory_config["llm_provider"]
         embed_model = memory_config["embed_model"]
-        
     except Exception as e:
-        raise Exception(f"Error loading config.json: {str(e)}")
+        raise Exception(f"Error loading memory config: {str(e)}")
 
     cfg = {
         "vector_store": {

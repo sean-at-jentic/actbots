@@ -4,6 +4,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import List, Dict
 import os, json
+from .config import get_config_value
 
 
 class BaseLLM(ABC):
@@ -27,13 +28,7 @@ class LiteLLMChatLLM(BaseLLM):
     ) -> None:
         import litellm
         if model is None:
-            try:
-                root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-                with open(os.path.join(root, "config.json"), "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
-                model = cfg.get("llm", {}).get("model", "gpt-4o")
-            except Exception:
-                model = "gpt-4o"
+            model = get_config_value("llm", "model", default="gpt-4o")
 
         self.model = model
         self.temperature = temperature
