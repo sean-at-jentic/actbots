@@ -51,6 +51,7 @@ from ..utils.llm import BaseLLM, LiteLLMChatLLM
 from ..memory.scratch_pad import ScratchPadMemory
 from ..utils.logger import get_logger
 from .base_reasoner import StepType
+from ..communication.hitl.base_intervention_hub import BaseInterventionHub, NoEscalation
 
 # Initialize module logger using the shared logging utility
 logger = get_logger(__name__)
@@ -59,8 +60,10 @@ logger = get_logger(__name__)
 # Module-level constants
 # ---------------------------------------------------------------------------
 
-# Maximum number of self-healing attempts for a single plan step.
-MAX_REFLECTION_ATTEMPTS = 2
+# Maximum number of reflection attempts before giving up on a failed step
+MAX_REFLECTION_ATTEMPTS = 3
+
+# Remove automatic retry limits - let the agent choose when to escalate
 
 # ---------------------------------------------------------------------------
 # Helper data models
@@ -82,6 +85,7 @@ class Step:
     status: str = "pending"  # pending | running | done | failed
     result: Any = None
     tool_id: Optional[str] = None  # chosen Jentic tool
+    params: Optional[Dict[str, Any]] = None  # chosen Jentic tool parameters
     tool_name: Optional[str] = None  # chosen tool name for logging
     reflection_attempts: int = 0  # track how many times we've tried to fix this step
 
@@ -230,7 +234,10 @@ class BulletPlanReasoner(BaseReasoner):
             else:
                 prompt = kw_template.format(context_text=step.text)
 
-            reply = self.llm.chat([{"role": "user", "content": prompt}]).strip()
+            # Add human guidance context if available
+            context_aware_prompt = self._add_human_guidance_to_prompt(prompt)
+
+            reply = self.llm.chat([{"role": "user", "content": context_aware_prompt}]).strip()
             if reply:
                 logger.info("LLM keyword-extraction produced query: %s", reply)
                 return reply
@@ -316,7 +323,7 @@ class BulletPlanReasoner(BaseReasoner):
 
         # 4️⃣ Fallback first hit
         first = hits[0]
-        plan_step.tool_name = first.get("name", None) if isinstance(first, dict) else getattr(first, "name", None)
+        step.tool_name = first.get("name", None) if isinstance(first, dict) else getattr(first, "name", None)
         return first["id"] if isinstance(first, dict) else getattr(first, "id", "unknown")
 
     def __init__(
@@ -327,6 +334,7 @@ class BulletPlanReasoner(BaseReasoner):
         model: str = "gpt-4o",
         max_iters: int = 20,
         search_top_k: int = 15,
+        intervention_hub: Optional[BaseInterventionHub] = None,
     ) -> None:
         logger.info(f"Initializing BulletPlanReasoner with model={model}, max_iters={max_iters}, search_top_k={search_top_k}")
         super().__init__()
@@ -335,7 +343,85 @@ class BulletPlanReasoner(BaseReasoner):
         self.llm = llm or LiteLLMChatLLM(model=model)
         self.max_iters = max_iters
         self.search_top_k = search_top_k
+        self.escalation = intervention_hub or NoEscalation()
         logger.info("BulletPlanReasoner initialization complete")
+
+    # ------------------------------------------------------------------
+    # Universal escalation helpers
+    # ------------------------------------------------------------------
+
+    def _process_llm_response_for_escalation(self, response: str, context: str = "") -> str:
+        """
+        Check if LLM response contains XML escalation request and handle it.
+        
+        Returns:
+            Processed response (either original or human response if escalation occurred)
+        """
+        response = response.strip()
+        
+        # Check for XML escalation pattern (same as FreeformReasoner)
+        escalation_pattern = r'<escalate_to_human\s+reason="([^"]+)"\s+question="([^"]+)"\s*/>'
+        match = re.search(escalation_pattern, response)
+        
+        if match:
+            reason = match.group(1).strip()
+            question = match.group(2).strip()
+            logger.info(f"🤖➡️👤 LLM requested escalation: {reason}")
+            
+            if self.escalation.is_available():
+                try:
+                    human_response = self.escalation.ask_human(question, context)
+                    if human_response.strip():
+                        logger.info(f"👤➡️🤖 Human provided response: {human_response}")
+                        
+                        # Store human guidance in memory for future LLM calls to reference
+                        guidance_key = f"human_guidance_{len(self.memory.keys())}"  # Unique key
+                        self.memory.set(
+                            key=guidance_key,
+                            value=human_response,
+                            description=f"Human guidance for: {question}"
+                        )
+                        # Also store the latest guidance under a well-known key
+                        self.memory.set(
+                            key="human_guidance_latest",
+                            value=human_response,
+                            description=f"Latest human guidance: {question}"
+                        )
+                        logger.info(f"Stored human guidance in memory: {guidance_key}")
+                        
+                        return human_response
+                    else:
+                        logger.warning("👤 No response from human, continuing with original")
+                except Exception as e:
+                    logger.warning(f"Escalation failed: {e}")
+            else:
+                logger.warning("⚠️ Escalation requested but not available")
+            
+            # Remove the escalation tag from the response
+            return re.sub(escalation_pattern, '', response).strip()
+        
+        return response
+
+    def _request_human_help(self, question: str, context: str = "") -> str:
+        """
+        Direct method for requesting human help from anywhere in the code.
+        
+        Returns:
+            Human response or empty string if not available
+        """
+        logger.info(f"🤖➡️👤 Direct escalation request: {question}")
+        
+        if self.escalation.is_available():
+            try:
+                response = self.escalation.ask_human(question, context)
+                logger.info(f"👤➡️🤖 Human response received")
+                return response
+            except Exception as e:
+                logger.warning(f"Direct escalation failed: {e}")
+        else:
+            logger.warning("⚠️ Direct escalation requested but not available")
+        
+        return ""
 
     # ------------------------------------------------------------------
     # BaseReasoner hook implementations
@@ -445,7 +531,9 @@ class BulletPlanReasoner(BaseReasoner):
             )
 
         try:
-            response = self.llm.chat(messages=[{"role": "user", "content": prompt}])
+            # Add human guidance context if available
+            context_aware_prompt = self._add_human_guidance_to_prompt(prompt)
+            response = self.llm.chat(messages=[{"role": "user", "content": context_aware_prompt}])
             raw_reply = response.strip()
             num_match = re.search(r"(\d+)", raw_reply)
             if num_match:
@@ -470,7 +558,10 @@ class BulletPlanReasoner(BaseReasoner):
             return search_hits[0]["id"]
 
     # 3. ACT ------------------------------------------------------------
-    def act(self, tool_id: str, state: ReasonerState):
+    def act(self, tool_id: str, state: ReasonerState, current_step: Step):
+        """
+        Generate parameters for and execute a Jentic tool.
+        """
         logger.info("=== ACTION PHASE ===")
         logger.info(f"Executing action with tool_id: {tool_id}")
 
@@ -519,7 +610,9 @@ class BulletPlanReasoner(BaseReasoner):
             )
         logger.debug(f"Parameter generation prompt:\n{prompt}")
 
-        messages = [{"role": "user", "content": prompt}]
+        # Add human guidance context if available
+        context_aware_prompt = self._add_human_guidance_to_prompt(prompt)
+        messages = [{"role": "user", "content": context_aware_prompt}]
         logger.info("Calling LLM for parameter generation")
         args_json = self.llm.chat(messages=messages)
         logger.info(f"LLM parameter response:\n{args_json}")
@@ -541,7 +634,9 @@ class BulletPlanReasoner(BaseReasoner):
             explicit_prompt = (
                 f"{prompt}\n\nIMPORTANT: You MUST include all required fields in the parameters: {', '.join(required_fields)}."
             )
-            messages = [{"role": "user", "content": explicit_prompt}]
+            # Add human guidance context for the re-prompt too
+            context_aware_explicit_prompt = self._add_human_guidance_to_prompt(explicit_prompt)
+            messages = [{"role": "user", "content": context_aware_explicit_prompt}]
             args_json = self.llm.chat(messages=messages)
             logger.info(f"LLM parameter response (re-prompt):\n{args_json}")
             try:
@@ -701,15 +796,34 @@ class BulletPlanReasoner(BaseReasoner):
             )
 
         logger.info("Calling LLM for reflection")
-        revised_step = self.llm.chat(messages=[{"role": "user", "content": prompt}]).strip()
+        # Add human guidance context if available
+        context_aware_prompt = self._add_human_guidance_to_prompt(prompt)
+        revised_step = self.llm.chat(messages=[{"role": "user", "content": context_aware_prompt}]).strip()
 
-        if "AUTH_FAILURE" in revised_step:
+        # Process for escalation during reflection
+        context = f"Step: {current_step.text}\nPhase: Reflection\nError: {err_msg}\nGoal: {state.goal}"
+        processed_step = self._process_llm_response_for_escalation(revised_step, context)
+        
+        if processed_step != revised_step:
+            # Human provided guidance during reflection
+            logger.info("Reflection escalated to human, using human guidance")
+            # Instead of replacing step text, revise it to incorporate human guidance
+            if current_step.text.lower().startswith("execute") or "channel" in current_step.text.lower():
+                # For execution steps, try to integrate the human response contextually
+                current_step.text = f"Execute Discord operation with channel_id: {processed_step}"
+            else:
+                current_step.text = processed_step
+            current_step.status = "pending"
+            current_step.tool_id = None
+            return True
+
+        if "AUTH_FAILURE" in processed_step:
             logger.error("Reflection indicates an unrecoverable authentication failure.")
             return False
 
-        if revised_step:
-            logger.info(f"LLM revised step from '{current_step.text}' to '{revised_step}'")
-            current_step.text = revised_step
+        if processed_step:
+            logger.info(f"LLM revised step from '{current_step.text}' to '{processed_step}'")
+            current_step.text = processed_step
             current_step.status = "pending"
             current_step.tool_id = None
             return True
@@ -798,20 +912,31 @@ class BulletPlanReasoner(BaseReasoner):
             )
 
         try:
-            reply = self.llm.chat(messages=[{"role": "user", "content": reasoning_prompt}]).strip()
+            # Add human guidance context if available
+            context_aware_reasoning_prompt = self._add_human_guidance_to_prompt(reasoning_prompt)
+            reply = self.llm.chat(messages=[{"role": "user", "content": context_aware_reasoning_prompt}]).strip()
             logger.debug("Reasoning LLM reply: %s", reply)
+
+            # Process for escalation
+            context = f"Step: {step.text}\nPhase: Reasoning\nGoal: {state.goal}"
+            processed_reply = self._process_llm_response_for_escalation(reply, context)
+            
+            if processed_reply != reply:
+                # Human provided guidance, use it as the reasoning result
+                logger.info("Reasoning step escalated, using human guidance as result")
+                return self._resolve_placeholders(processed_reply)
 
             # Attempt to parse JSON result if present. If successful, resolve
             # placeholders within the structure. Otherwise, resolve on the raw string.
-            if reply.startswith("{") and reply.endswith("}"):
+            if processed_reply.startswith("{") and processed_reply.endswith("}"):
                 try:
-                    parsed_json = json.loads(reply)
+                    parsed_json = json.loads(processed_reply)
                     return self._resolve_placeholders(parsed_json)
                 except json.JSONDecodeError:
                     # Not valid JSON, fall through to treat as a raw string
                     pass
         
-            return self._resolve_placeholders(reply)
+            return self._resolve_placeholders(processed_reply)
         except Exception as exc:  # noqa: BLE001
             logger.error("Reasoning step failed: %s", exc)
             return f"Error during reasoning: {exc}"
@@ -842,6 +967,11 @@ class BulletPlanReasoner(BaseReasoner):
             if state.goal_completed:
                 logger.info("Goal marked as completed! Breaking from loop")
                 break
+            
+            # Agent can proactively check if it needs human help before proceeding
+            if iteration > 0 and self._should_check_for_human_guidance(state, iteration):
+                if self._check_for_proactive_escalation(state, iteration):
+                    continue  # Human guidance may have modified the state
             
             # Ensure we have at least one step planned.
             if iteration == 0 and not state.plan:
@@ -889,7 +1019,7 @@ class BulletPlanReasoner(BaseReasoner):
                 elif step_type == "EXECUTE":
                     tool_id = self.select_tool(current_step, state)
                     logger.info(f"Tool selected: {tool_id} ({current_step.tool_name})")
-                    result = self.act(tool_id, state)
+                    result = self.act(tool_id, state, current_step)
                     logger.info(f"Action result type: {type(result)}")
                     tool_calls.append({
                         "tool_id": tool_id,
@@ -902,7 +1032,7 @@ class BulletPlanReasoner(BaseReasoner):
                 elif step_type in ["TOOL_USING", "TOOL"]:  # Support both formats
                     tool_id = self.select_tool(current_step, state)
                     logger.info(f"Tool selected: {tool_id} ({current_step.tool_name})")
-                    result = self.act(tool_id, state)
+                    result = self.act(tool_id, state, current_step)
                     logger.info(f"Action result type: {type(result)}")
                     tool_calls.append({
                         "tool_id": tool_id,
@@ -916,7 +1046,7 @@ class BulletPlanReasoner(BaseReasoner):
                     logger.warning(f"Unknown step_type '{step_type}', defaulting to EXECUTE.")
                     tool_id = self.select_tool(current_step, state)
                     logger.info(f"Tool selected: {tool_id} ({current_step.tool_name})")
-                    result = self.act(tool_id, state)
+                    result = self.act(tool_id, state, current_step)
                     logger.info(f"Action result type: {type(result)}")
                     tool_calls.append({
                         "tool_id": tool_id,
@@ -925,6 +1055,16 @@ class BulletPlanReasoner(BaseReasoner):
                     })
 
                 self.observe(result, state)
+                
+                # Check if the step failed after observation and trigger reflection
+                if state.failed and current_step.status == "failed":
+                    logger.info("Step failed after observation, attempting reflection.")
+                    error_msg = getattr(current_step.result, 'error', str(current_step.result)) if hasattr(current_step.result, 'error') else str(current_step.result)
+                    if self.reflect(current_step, error_msg, state):
+                        logger.info("Step revised after failure, retrying.")
+                        state.failed = False
+                    else:
+                        logger.warning("Reflection failed after step failure. Ending reasoning loop.")
                 
             except Exception as e:  # noqa: BLE001
                 logger.error(f"Step execution failed: {e}")
@@ -955,6 +1095,96 @@ class BulletPlanReasoner(BaseReasoner):
         )
         logger.info(f"Returning result: {result}")
         return result
+    
+    def _should_check_for_human_guidance(self, state: ReasonerState, iteration: int) -> bool:
+        """Determine if the agent should proactively check for human guidance."""
+        if not self.escalation.is_available():
+            return False
+            
+        # Let the agent decide every few iterations if it wants to check for guidance
+        # Remove automatic failure/complexity triggers - agent should decide
+        return iteration > 0 and iteration % 4 == 0  # Check every 4 iterations
+    
+    def _check_for_proactive_escalation(self, state: ReasonerState, iteration: int) -> bool:
+        """Let the agent proactively ask for human guidance."""
+        if not self.escalation.is_available():
+            return False
+            
+        # Build context for the agent to decide
+        remaining_steps = list(state.plan)
+        recent_failures = [h for h in state.history if "failed" in h.lower()]
+        
+        escalation_check_prompt = f"""
+You are working on the goal: "{state.goal}"
+
+Current situation:
+- Iteration: {iteration}
+- Completed steps: {len(state.history)}
+- Remaining steps: {len(remaining_steps)}
+
+Remaining plan:
+{chr(10).join([f"- {step.text}" for step in remaining_steps[:3]])}
+{"..." if len(remaining_steps) > 3 else ""}
+
+Recent activity:
+{chr(10).join(state.history[-3:]) if state.history else "None"}
+
+Do you want to ask a human for guidance at this point? You have full autonomy to decide based on:
+- Your confidence in the current approach
+- Whether you need clarification about anything
+- If you want confirmation before proceeding
+- Any other reason you think human input would be helpful
+
+Respond with:
+- <escalate_to_human reason="your reason" question="your specific question"/> - to ask for guidance
+- CONTINUE - to proceed without asking
+
+Your choice:"""
+
+        try:
+            response = self.llm.chat(messages=[{"role": "user", "content": escalation_check_prompt}]).strip()
+            logger.info(f"Proactive escalation check response: {response}")
+            
+            # Process escalation request
+            context = f"Goal: {state.goal}\nIteration: {iteration}\nPhase: Proactive Check"
+            processed_response = self._process_llm_response_for_escalation(response, context)
+            
+            if processed_response != response:
+                # Human provided guidance, incorporate it
+                logger.info("Agent proactively escalated, incorporating human guidance")
+                
+                # Update goal or add guidance to history
+                if "goal:" in processed_response.lower():
+                    # Update goal if human provided clarification
+                    state.goal = processed_response
+                    state.plan.clear()  # Clear plan to regenerate with new goal
+                else:
+                    # Add as contextual guidance
+                    state.history.append(f"Human guidance: {processed_response}")
+                
+                return True
+                
+        except Exception as e:
+            logger.warning(f"Proactive escalation check failed: {e}")
+        
+        return False
+
+    # ------------------------------------------------------------------
+    # Human guidance integration helpers
+    # ------------------------------------------------------------------
+    
+    def _add_human_guidance_to_prompt(self, base_prompt: str) -> str:
+        """Add recent human guidance from memory to prompts."""
+        try:
+            # Get latest human guidance from memory
+            latest_guidance = self.memory.retrieve("human_guidance_latest")
+            if latest_guidance and latest_guidance.strip():
+                guidance_section = f"\n\nRECENT HUMAN GUIDANCE: {latest_guidance}\n"
+                return base_prompt + guidance_section
+        except KeyError:
+            # No human guidance in memory yet
+            pass
+        return base_prompt
 
     # ------------------------------------------------------------------
     # Helper utilities
