@@ -263,6 +263,30 @@ class AgentMemory(BaseMemory):
 
         return status
 
+    # BaseMemory interface implementations
+    def store(self, key: str, value: Any) -> None:
+        """Store a value under the given key."""
+        self._kv[key] = value
+
+    def retrieve(self, key: str) -> Optional[Any]:
+        """Retrieve a value by key."""
+        return self._kv.get(key)
+
+    def delete(self, key: str) -> bool:
+        """Delete a stored value by key."""
+        if key in self._kv:
+            del self._kv[key]
+            return True
+        return False
+
+    def clear(self) -> None:
+        """Clear all stored values."""
+        self._kv.clear()
+
+    def keys(self) -> list[str]:
+        """Get all stored keys."""
+        return list(self._kv.keys())
+
 # factory
 def create_agent_memory() -> AgentMemory:
     """Create an `AgentMemory` instance configured to use LiteLLM + Chroma."""
