@@ -18,9 +18,11 @@ SETUP INSTRUCTIONS:
    `make install`
 
 4. Run the demo:
-   `python main.py`
+   - CLI mode: `python main.py` or `python main.py --mode cli`
+   - UI mode: `python main.py --mode ui`
 --------------------------------------------------------------------------
 """
+import argparse
 import logging
 import os
 import sys
@@ -31,8 +33,9 @@ from dotenv import load_dotenv
 sys.path.insert(0, os.path.dirname(__file__))
 
 from jentic_agents.agents.interactive_cli_agent import InteractiveCLIAgent
+from jentic_agents.agents.simple_ui_agent import SimpleUIAgent
 from jentic_agents.inbox.cli_inbox import CLIInbox
-from jentic_agents.memory.scratch_pad import ScratchPadMemory
+from jentic_agents.memory.agent_memory import create_agent_memory
 from jentic_agents.platform.jentic_client import JenticClient
 from jentic_agents.reasoners.bullet_list_reasoner import BulletPlanReasoner
 from jentic_agents.reasoners.standard_reasoner import StandardReasoner
@@ -42,8 +45,21 @@ from jentic_agents.utils.llm import LiteLLMChatLLM
 # Prefix to detect Gemini provider
 _GEMINI_PREFIX = "gemini/"
 
+logging.getLogger("litellm").setLevel(logging.WARNING)
+logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+
 def main():
     """Run the live demo."""
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="ActBots Live Demo")
+    parser.add_argument(
+        "--mode", 
+        choices=["cli", "ui"], 
+        default="cli",
+        help="Interface mode: 'cli' for command line, 'ui' for graphical interface (default: cli)"
+    )
+    args = parser.parse_args()
+
     # Load environment variables from .env file
     load_dotenv()
 
@@ -52,11 +68,14 @@ def main():
     logging.getLogger("openai").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
-
-    print("🚀 Starting ActBots Live Demo")
+    mode_name = "CLI" if args.mode == "cli" else "UI"
+    print(f"🚀 Starting ActBots Live Demo ({mode_name} Mode)")
     print("=" * 50)
     print("This agent uses live Jentic and OpenAI services.")
-    print("Type your goal below, or 'quit' to exit.")
+    if args.mode == "cli":
+        print("Type your goal below, or 'quit' to exit.")
+    else:
+        print("A graphical interface will open for goal input.")
     print("-" * 50)
 
     # ------------------------------------------------------------------
@@ -87,7 +106,7 @@ def main():
         # 2. Initialize the LLM wrapper and Reasoner
         # Build the LLM wrapper for the selected model
         llm_wrapper = LiteLLMChatLLM(model=model_name)
-        memory = ScratchPadMemory()
+        memory = create_agent_memory()
 
         reasoner = BulletPlanReasoner(
             jentic=jentic_client,
@@ -95,17 +114,28 @@ def main():
             llm=llm_wrapper,
         )
 
-        # 3. Initialize Memory and Inbox
-        inbox = CLIInbox(prompt="Enter your goal: ")
+        # 3. Initialize Inbox and Agent based on mode
+        if args.mode == "cli":
+            # CLI mode: create inbox first, then agent
+            inbox = CLIInbox(prompt="Enter your goal: ")
+            agent = InteractiveCLIAgent(
+                reasoner=reasoner,
+                memory=memory,
+                inbox=inbox,
+                jentic_client=jentic_client,
+            )
 
-        # 4. Create and run the Agent
-        agent = InteractiveCLIAgent(
-            reasoner=reasoner,
-            memory=memory,
-            inbox=inbox,
-            jentic_client=jentic_client,
-        )
+        else:  # ui mode
+            # For UI mode, we don't use CLIInbox since the UI handles input directly
+            inbox = CLIInbox(prompt="Enter your goal: ")  # Still needed for interface compatibility
+            agent = SimpleUIAgent(
+                reasoner=reasoner,
+                memory=memory,
+                inbox=inbox,
+                jentic_client=jentic_client,
+            )
 
+        # 4. Run the Agent
         agent.spin()
 
     except ImportError as e:

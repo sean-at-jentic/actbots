@@ -97,17 +97,17 @@ class TimerStats:
         """Log statistics for a named operation."""
         stats = self.get_stats(name)
         if stats:
-            self.logger.info(f"Stats for '{name}': {stats}")
+            self.logger.info(f"Timing stats for '{name}': avg={stats['avg_ms']:.2f}ms, min={stats['min_ms']:.2f}ms, max={stats['max_ms']:.2f}ms, count={stats['count']}")
         else:
             self.logger.warning(f"No timing data available for '{name}'")
     
     def log_all_stats(self) -> None:
         """Log statistics for all recorded operations."""
         if not self.timings:
-            self.logger.info("No timing data recorded")
+            self.logger.info("No timing data recorded.")
             return
         
-        self.logger.info("=== Timing Statistics ===")
+        self.logger.info("Timing statistics summary:")
         for name in sorted(self.timings.keys()):
             self.log_stats(name)
     

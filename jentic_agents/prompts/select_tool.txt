@@ -1,12 +1,73 @@
-Current plan step:
-"{plan_step_text}"{goal_info}
+{
+  "instruction": "Select the single most appropriate tool from the list of candidates using intelligent multi-factor scoring. Consider context, API domain match, parameter compatibility, and workflow state to make the optimal selection.",
+  
+  "inputs": {
+    "goal": "{goal}",
+    "plan_step": "{plan_step}",
+    "memory_keys": "{memory_keys}",
+    "tool_candidates": "{tool_candidates}",
+    "context_analysis": "{context_analysis}",
+    "workflow_state": "{workflow_state}"
+  },
+  
+  "scoring_criteria": {
+    "api_domain_match": {
+      "weight": 30,
+      "description": "How well the tool's API domain matches the identified target domain",
+      "scoring": "High match (30pts), Partial match (15pts), Generic/Unknown (10pts), Wrong domain (0pts)"
+    },
+    "action_compatibility": {
+      "weight": 25, 
+      "description": "How well the tool's primary function matches the intended action type",
+      "scoring": "Perfect match (25pts), Close match (15pts), Partial match (8pts), Poor match (0pts)"
+    },
+    "parameter_compatibility": {
+      "weight": 20,
+      "description": "How well tool parameters align with available data and context requirements",
+      "scoring": "All params available (20pts), Most params available (12pts), Some missing (5pts), Many missing (0pts)"
+    },
+    "workflow_integration": {
+      "weight": 15,
+      "description": "How well the tool fits into the current workflow state and step sequence",
+      "scoring": "Seamless integration (15pts), Good fit (10pts), Acceptable (5pts), Poor fit (0pts)"
+    },
+    "simplicity_efficiency": {
+      "weight": 10,
+      "description": "Tool simplicity, directness, and minimal setup requirements",
+      "scoring": "Very simple (10pts), Moderate complexity (6pts), Complex setup (2pts), Very complex (0pts)"
+    }
+  },
 
-Candidate tools discovered (reply with ONLY the *number* of the best match):
-{tool_lines}
+  "rules": [
+    "Calculate a total score for each tool using the weighted criteria above (max 100 points).",
+    "CRITICAL: Prioritize API domain match - tools from the identified target API domain should score significantly higher.",
+    "Consider context analysis results: action_type, api_domain, workflow_complexity, and available_data.",
+    "Factor in workflow state: previous steps, memory contents, and step dependencies.",
+    "Prefer tools that require minimal additional data lookup when workflow_complexity is 'single-step'.",
+    "For multi-step workflows, prefer tools that complement the current step in the sequence.",
+    "Apply confidence thresholds: High confidence (80+), Medium confidence (60-79), Low confidence (40-59), Too low (<40).",
+    "If highest scoring tool has confidence <60, consider providing alternative suggestions.",
+    "Account for parameter availability from memory_keys and context analysis available_data.",
+    "Penalize tools that require data not available in current context or memory.",
+    "If no tool meets minimum threshold (40 points), respond with '0'.",
+    "Respond with ONLY the number of the highest scoring tool (e.g., '2'). Do not include explanation."
+  ],
 
-IMPORTANT: 
-- Reply with ONLY a single number (1, 2, 3, etc.). 
-- Choose tools that match the platform/service mentioned in the goal context.
-- If none fit, reply with "0".
-
-Number:
+  "selection_examples": [
+    {
+      "context": "Goal: Create Trello card, API domain: trello (high confidence), Available: board_id from URL",
+      "scoring_rationale": "Trello card creation tool gets 30pts (domain match) + 25pts (action match) + 20pts (params available) = 75pts minimum",
+      "selection": "Tool focused on Trello card creation with board_id and list_id parameters"
+    },
+    {
+      "context": "Goal: Send Discord message, API domain: discord (high confidence), Available: channel info in memory",
+      "scoring_rationale": "Discord message tool gets 30pts (domain) + 25pts (action) + 20pts (params) = 75pts",
+      "selection": "Tool for Discord message posting with channel_id parameter"
+    },
+    {
+      "context": "Goal: Get user info, API domain: generic (low confidence), Limited context",
+      "scoring_rationale": "Generic user tools get 10pts (domain) + 25pts (action) + varying param scores",
+      "selection": "Most compatible generic user info tool, but expect lower confidence score"
+    }
+  ]
+}
