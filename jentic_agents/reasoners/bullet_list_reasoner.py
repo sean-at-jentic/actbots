@@ -60,6 +60,9 @@ logger = get_logger(__name__)
 # Module-level constants
 # ---------------------------------------------------------------------------
 
+# Maximum number of reflection attempts before giving up on a failed step
+MAX_REFLECTION_ATTEMPTS = 3
+
 # Remove automatic retry limits - let the agent choose when to escalate
 
 # ---------------------------------------------------------------------------
@@ -317,7 +320,7 @@ class BulletPlanReasoner(BaseReasoner):
 
         # 4️⃣ Fallback first hit
         first = hits[0]
-        plan_step.tool_name = first.get("name", None) if isinstance(first, dict) else getattr(first, "name", None)
+        step.tool_name = first.get("name", None) if isinstance(first, dict) else getattr(first, "name", None)
         return first["id"] if isinstance(first, dict) else getattr(first, "id", "unknown")
 
     def __init__(
@@ -970,7 +973,7 @@ class BulletPlanReasoner(BaseReasoner):
                 elif step_type == "EXECUTE":
                     tool_id = self.select_tool(current_step, state)
                     logger.info(f"Tool selected: {tool_id} ({current_step.tool_name})")
-                    result = self.act(tool_id, state)
+                    result = self.act(tool_id, state, current_step)
                     logger.info(f"Action result type: {type(result)}")
                     tool_calls.append({
                         "tool_id": tool_id,
@@ -983,7 +986,7 @@ class BulletPlanReasoner(BaseReasoner):
                 elif step_type in ["TOOL_USING", "TOOL"]:  # Support both formats
                     tool_id = self.select_tool(current_step, state)
                     logger.info(f"Tool selected: {tool_id} ({current_step.tool_name})")
-                    result = self.act(tool_id, state)
+                    result = self.act(tool_id, state, current_step)
                     logger.info(f"Action result type: {type(result)}")
                     tool_calls.append({
                         "tool_id": tool_id,
@@ -997,7 +1000,7 @@ class BulletPlanReasoner(BaseReasoner):
                     logger.warning(f"Unknown step_type '{step_type}', defaulting to EXECUTE.")
                     tool_id = self.select_tool(current_step, state)
                     logger.info(f"Tool selected: {tool_id} ({current_step.tool_name})")
-                    result = self.act(tool_id, state)
+                    result = self.act(tool_id, state, current_step)
                     logger.info(f"Action result type: {type(result)}")
                     tool_calls.append({
                         "tool_id": tool_id,
