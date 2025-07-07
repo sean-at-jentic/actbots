@@ -3,4 +3,4 @@
 from rich.console import Console
 
 # Single console instance reused by CLI agents, intervention hubs, etc.
-console = Console() 
+console = Console()

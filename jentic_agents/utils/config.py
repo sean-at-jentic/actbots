@@ -5,7 +5,9 @@ from pathlib import Path
 
 _CONFIG_CACHE: Dict[str, Any] = {}
 
-CONFIG_FILE = os.environ.get("JENTIC_CONFIG", os.path.join(os.path.dirname(__file__), "..", "..", "config.json"))
+CONFIG_FILE = os.environ.get(
+    "JENTIC_CONFIG", os.path.join(os.path.dirname(__file__), "..", "..", "config.json")
+)
 
 
 def _load_config() -> Dict[str, Any]:
@@ -33,4 +35,4 @@ def get_config_value(*keys, default=None) -> Any:
             cfg = cfg[key]
         else:
             return default
-    return cfg 
+    return cfg

@@ -1,9 +1,9 @@
 """LiteLLM wrapper for the Jentic Agents."""
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import List, Dict
-import os, json
 from .config import get_config_value
 
 
@@ -27,6 +27,7 @@ class LiteLLMChatLLM(BaseLLM):
         max_tokens: int | None = None,
     ) -> None:
         import litellm
+
         if model is None:
             model = get_config_value("llm", "model", default="gpt-4o")
 
@@ -43,4 +44,4 @@ class LiteLLMChatLLM(BaseLLM):
             max_tokens=kwargs.get("max_tokens", self.max_tokens),
         )
         content = resp.choices[0].message.content
-        return content or ""  
+        return content or ""

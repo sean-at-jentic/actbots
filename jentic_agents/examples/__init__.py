@@ -2,4 +2,4 @@
 Examples demonstrating jentic_agents capabilities.
 """
 
-__all__ = [] 
+__all__ = []

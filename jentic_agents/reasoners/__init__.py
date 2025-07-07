@@ -7,7 +7,7 @@ from .freeform_reasoner import FreeformReasoner
 
 __all__ = [
     "BaseReasoner",
-    "ReasoningResult", 
+    "ReasoningResult",
     "StepType",
     "StandardReasoner",
     "BulletPlanReasoner",

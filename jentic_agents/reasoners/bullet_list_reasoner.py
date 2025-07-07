@@ -35,9 +35,7 @@ autonomous coding agent can fill them out.
 from __future__ import annotations
 
 import json
-import os
 import re
-import textwrap
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -68,6 +66,7 @@ MAX_REFLECTION_ATTEMPTS = 3
 # ---------------------------------------------------------------------------
 # Helper data models
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class Step:
@@ -111,28 +110,28 @@ def parse_bullet_plan(markdown: str) -> deque[Step]:
     # Use shared helper for fence stripping
     markdown_stripped = strip_backtick_fences(markdown)
     # Now check for JSON array
-    if markdown_stripped.startswith('[') and markdown_stripped.endswith(']'):
+    if markdown_stripped.startswith("[") and markdown_stripped.endswith("]"):
         try:
             logger.info("Parsing plan as JSON array")
             json_steps = json.loads(markdown_stripped)
             steps = []
             for step_data in json_steps:
                 if isinstance(step_data, dict):
-                    text = step_data.get('text', '')
-                    step_type = step_data.get('step_type', '')
-                    store_key = step_data.get('store_key')
+                    text = step_data.get("text", "")
+                    step_type = step_data.get("step_type", "")
+                    store_key = step_data.get("store_key")
                     # Extract goal context from parentheses if present
                     goal_context = None
-                    goal_match = re.search(r'\(\s*goal:\s*([^)]+)\s*\)', text)
+                    goal_match = re.search(r"\(\s*goal:\s*([^)]+)\s*\)", text)
                     if goal_match:
                         goal_context = goal_match.group(1).strip()
                         # Remove the goal context from the main content
-                        text = re.sub(r'\s*\(\s*goal:[^)]+\s*\)', '', text).strip()
+                        text = re.sub(r"\s*\(\s*goal:[^)]+\s*\)", "", text).strip()
                     step = Step(
                         text=text,
                         indent=0,  # JSON format doesn't use indentation
                         store_key=store_key,
-                        goal_context=goal_context
+                        goal_context=goal_context,
                     )
                     # Store step_type as an attribute for later use
                     step.step_type = step_type
@@ -140,7 +139,9 @@ def parse_bullet_plan(markdown: str) -> deque[Step]:
             logger.info(f"Parsed {len(steps)} steps from plan (JSON mode)")
             return deque(steps)
         except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse as JSON: {e}, falling back to markdown parsing")
+            logger.warning(
+                f"Failed to parse as JSON: {e}, falling back to markdown parsing"
+            )
             # Fall through to markdown parsing
     # Original markdown bullet parsing logic
     steps: List[Step] = []
@@ -157,11 +158,11 @@ def parse_bullet_plan(markdown: str) -> deque[Step]:
 
         # Parse goal context from parentheses: "... ( goal: actual goal text )"
         goal_context = None
-        goal_match = re.search(r'\(\s*goal:\s*([^)]+)\s*\)', content)
+        goal_match = re.search(r"\(\s*goal:\s*([^)]+)\s*\)", content)
         if goal_match:
             goal_context = goal_match.group(1).strip()
             # Remove the goal context from the main content
-            content = re.sub(r'\s*\(\s*goal:[^)]+\s*\)', '', content).strip()
+            content = re.sub(r"\s*\(\s*goal:[^)]+\s*\)", "", content).strip()
             logger.debug(f"Extracted goal context: {goal_context}")
 
         # Simple directive detection:  "… -> store: weather"
@@ -172,9 +173,16 @@ def parse_bullet_plan(markdown: str) -> deque[Step]:
                 store_key = directive.split(":", 1)[1].strip()
                 logger.debug(f"Found store directive: {store_key}")
 
-        step = Step(text=content, indent=indent_level, store_key=store_key, goal_context=goal_context)
+        step = Step(
+            text=content,
+            indent=indent_level,
+            store_key=store_key,
+            goal_context=goal_context,
+        )
         steps.append(step)
-        logger.debug(f"Parsed step: text='{step.text}', goal_context='{step.goal_context}', store_key='{step.store_key}'")
+        logger.debug(
+            f"Parsed step: text='{step.text}', goal_context='{step.goal_context}', store_key='{step.store_key}'"
+        )
 
     # ------------------------------------------------------------------
     # Skip container/meta bullets so we only execute leaf actions.
@@ -188,9 +196,7 @@ def parse_bullet_plan(markdown: str) -> deque[Step]:
             continue  # don't enqueue parent/meta bullets
         leaf_steps.append(step)
 
-    logger.info(
-        f"Parsed {len(leaf_steps)} steps from plan (original {len(steps)})"
-    )
+    logger.info(f"Parsed {len(leaf_steps)} steps from plan (original {len(steps)})")
     return deque(leaf_steps)
 
 
@@ -203,15 +209,14 @@ class BulletPlanReasoner(BaseReasoner):
         current_dir = Path(__file__).parent.parent
         prompt_path = current_dir / "prompts" / f"{prompt_name}.txt"
         try:
-            with open(prompt_path, 'r', encoding='utf-8') as f:
+            with open(prompt_path, "r", encoding="utf-8") as f:
                 content = f.read().strip()
-                if content.startswith('{'):
+                if content.startswith("{"):
                     return json.loads(content)
                 return content
         except FileNotFoundError:
             logger.error(f"Prompt file not found: {prompt_path}")
             raise RuntimeError(f"Prompt file not found: {prompt_path}")
-
 
     def _build_search_query(self, step: "Step") -> str:
         """
@@ -229,7 +234,9 @@ class BulletPlanReasoner(BaseReasoner):
             # Add human guidance context if available
             context_aware_prompt = self._add_human_guidance_to_prompt(prompt)
 
-            reply = self.llm.chat([{"role": "user", "content": context_aware_prompt}]).strip()
+            reply = self.llm.chat(
+                [{"role": "user", "content": context_aware_prompt}]
+            ).strip()
             if reply:
                 logger.info("LLM keyword-extraction produced query: %s", reply)
                 return reply
@@ -258,9 +265,21 @@ class BulletPlanReasoner(BaseReasoner):
         for idx, h in enumerate(hits, 1):
             name = h.get("name") if isinstance(h, dict) else getattr(h, "name", None)
             if not name or not str(name).strip():
-                name = h.get("id", "Unknown") if isinstance(h, dict) else getattr(h, "id", "Unknown")
-            api_name = h.get("api_name") if isinstance(h, dict) else getattr(h, "api_name", None)
-            desc = h.get("description", "") if isinstance(h, dict) else getattr(h, "description", "")
+                name = (
+                    h.get("id", "Unknown")
+                    if isinstance(h, dict)
+                    else getattr(h, "id", "Unknown")
+                )
+            api_name = (
+                h.get("api_name")
+                if isinstance(h, dict)
+                else getattr(h, "api_name", None)
+            )
+            desc = (
+                h.get("description", "")
+                if isinstance(h, dict)
+                else getattr(h, "description", "")
+            )
             display = f"{name} ({api_name})" if api_name else name
             numbered_lines.append(f"{idx}. {display} — {desc}")
         candidate_block = "\n".join(numbered_lines)
@@ -285,7 +304,9 @@ class BulletPlanReasoner(BaseReasoner):
                 tool_candidates=candidate_block,
             )
 
-        raw_reply = self.llm.chat(messages=[{"role": "user", "content": prompt}]).strip()
+        raw_reply = self.llm.chat(
+            messages=[{"role": "user", "content": prompt}]
+        ).strip()
         logger.debug("LLM tool-selection reply: %s", raw_reply)
 
         # 1️⃣ Numeric selection
@@ -294,7 +315,11 @@ class BulletPlanReasoner(BaseReasoner):
             idx = int(match.group(1)) - 1
             if 0 <= idx < len(hits):
                 chosen = hits[idx]
-                return chosen["id"] if isinstance(chosen, dict) else getattr(chosen, "id", "unknown")
+                return (
+                    chosen["id"]
+                    if isinstance(chosen, dict)
+                    else getattr(chosen, "id", "unknown")
+                )
 
         # 2️⃣ ID or name substring
         lower_reply = raw_reply.lower()
@@ -309,14 +334,24 @@ class BulletPlanReasoner(BaseReasoner):
         # 3️⃣ Provider heuristic
         step_lower = step.text.lower()
         for h in hits:
-            api_name = h.get("api_name", "").lower() if isinstance(h, dict) else getattr(h, "api_name", "").lower()
+            api_name = (
+                h.get("api_name", "").lower()
+                if isinstance(h, dict)
+                else getattr(h, "api_name", "").lower()
+            )
             if api_name and api_name.split(".")[0] in step_lower:
                 return h["id"] if isinstance(h, dict) else getattr(h, "id", "unknown")
 
         # 4️⃣ Fallback first hit
         first = hits[0]
-        step.tool_name = first.get("name", None) if isinstance(first, dict) else getattr(first, "name", None)
-        return first["id"] if isinstance(first, dict) else getattr(first, "id", "unknown")
+        step.tool_name = (
+            first.get("name", None)
+            if isinstance(first, dict)
+            else getattr(first, "name", None)
+        )
+        return (
+            first["id"] if isinstance(first, dict) else getattr(first, "id", "unknown")
+        )
 
     def __init__(
         self,
@@ -328,7 +363,9 @@ class BulletPlanReasoner(BaseReasoner):
         search_top_k: int = 15,
         intervention_hub: Optional[BaseInterventionHub] = None,
     ) -> None:
-        logger.info(f"Initializing BulletPlanReasoner with model={model}, max_iters={max_iters}, search_top_k={search_top_k}")
+        logger.info(
+            f"Initializing BulletPlanReasoner with model={model}, max_iters={max_iters}, search_top_k={search_top_k}"
+        )
         super().__init__()
         self.jentic = jentic
         self.memory = memory
@@ -342,77 +379,85 @@ class BulletPlanReasoner(BaseReasoner):
     # Universal escalation helpers
     # ------------------------------------------------------------------
 
-    def _process_llm_response_for_escalation(self, response: str, context: str = "") -> str:
+    def _process_llm_response_for_escalation(
+        self, response: str, context: str = ""
+    ) -> str:
         """
         Check if LLM response contains XML escalation request and handle it.
-        
+
         Returns:
             Processed response (either original or human response if escalation occurred)
         """
         response = response.strip()
-        
+
         # Check for XML escalation pattern (same as FreeformReasoner)
-        escalation_pattern = r'<escalate_to_human\s+reason="([^"]+)"\s+question="([^"]+)"\s*/>'
+        escalation_pattern = (
+            r'<escalate_to_human\s+reason="([^"]+)"\s+question="([^"]+)"\s*/>'
+        )
         match = re.search(escalation_pattern, response)
-        
+
         if match:
             reason = match.group(1).strip()
             question = match.group(2).strip()
             logger.info(f"🤖➡️👤 LLM requested escalation: {reason}")
-            
+
             if self.escalation.is_available():
                 try:
                     human_response = self.escalation.ask_human(question, context)
                     if human_response.strip():
                         logger.info(f"👤➡️🤖 Human provided response: {human_response}")
-                        
+
                         # Store human guidance in memory for future LLM calls to reference
-                        guidance_key = f"human_guidance_{len(self.memory.keys())}"  # Unique key
+                        guidance_key = (
+                            f"human_guidance_{len(self.memory.keys())}"  # Unique key
+                        )
                         self.memory.set(
                             key=guidance_key,
                             value=human_response,
-                            description=f"Human guidance for: {question}"
+                            description=f"Human guidance for: {question}",
                         )
                         # Also store the latest guidance under a well-known key
                         self.memory.set(
                             key="human_guidance_latest",
                             value=human_response,
-                            description=f"Latest human guidance: {question}"
+                            description=f"Latest human guidance: {question}",
                         )
                         logger.info(f"Stored human guidance in memory: {guidance_key}")
-                        
+
                         return human_response
                     else:
-                        logger.warning("👤 No response from human, continuing with original")
+                        logger.warning(
+                            "👤 No response from human, continuing with original"
+                        )
                 except Exception as e:
                     logger.warning(f"Escalation failed: {e}")
             else:
                 logger.warning("⚠️ Escalation requested but not available")
-            
+
             # Remove the escalation tag from the response
-            return re.sub(escalation_pattern, '', response).strip()
-        
+            return re.sub(escalation_pattern, "", response).strip()
+
         return response
 
     def _request_human_help(self, question: str, context: str = "") -> str:
         """
         Direct method for requesting human help from anywhere in the code.
-        
+
         Returns:
             Human response or empty string if not available
         """
         logger.info(f"🤖➡️👤 Direct escalation request: {question}")
-        
+
         if self.escalation.is_available():
             try:
                 response = self.escalation.ask_human(question, context)
-                logger.info(f"👤➡️🤖 Human response received")
+                logger.info("👤➡️🤖 Human response received")
                 return response
             except Exception as e:
                 logger.warning(f"Direct escalation failed: {e}")
         else:
             logger.warning("⚠️ Direct escalation requested but not available")
-        
+
         return ""
 
     # ------------------------------------------------------------------
@@ -460,13 +505,17 @@ class BulletPlanReasoner(BaseReasoner):
         logger.info(f"Selecting tool for step: {plan_step.text}")
 
         # ---- Fast path: "Execute <memory_key> ..." → reuse stored tool_id ----
-        exec_match = re.match(r"execute\s+([\w\-_]+)", plan_step.text.strip(), re.IGNORECASE)
+        exec_match = re.match(
+            r"execute\s+([\w\-_]+)", plan_step.text.strip(), re.IGNORECASE
+        )
         if exec_match:
             mem_key = exec_match.group(1)
             if mem_key in self.memory.keys():
                 stored = self.memory.retrieve(mem_key)
                 if isinstance(stored, dict) and "id" in stored:
-                    logger.info(f"Reusing tool_id from memory key '{mem_key}': {stored['id']}")
+                    logger.info(
+                        f"Reusing tool_id from memory key '{mem_key}': {stored['id']}"
+                    )
                     plan_step.tool_id = stored["id"]
                     return stored["id"]
 
@@ -481,27 +530,33 @@ class BulletPlanReasoner(BaseReasoner):
 
         # Sort hits so that those whose provider (api_name or its domain) is mentioned in the plan step are at the top
         step_text_lower = plan_step.text.lower()
+
         def provider_mentioned(hit):
-            api_name = hit.get('api_name', '').lower() if isinstance(hit, dict) else getattr(hit, 'api_name', '').lower()
+            api_name = (
+                hit.get("api_name", "").lower()
+                if isinstance(hit, dict)
+                else getattr(hit, "api_name", "").lower()
+            )
             if not api_name:
                 return False
-            domain_part = api_name.split('.')[0]
+            domain_part = api_name.split(".")[0]
             return (api_name in step_text_lower) or (domain_part in step_text_lower)
+
         search_hits = sorted(search_hits, key=lambda h: not provider_mentioned(h))
 
         tool_names_list = []
         tool_lines_list = []
         for i, h in enumerate(search_hits):
             if isinstance(h, dict):
-                name = h.get('name', h.get('id', 'Unknown'))
-                api_name = h.get('api_name')
-                description = h.get('description', '')
-                hit_id = h.get('id', 'Unknown')
+                name = h.get("name", h.get("id", "Unknown"))
+                api_name = h.get("api_name")
+                description = h.get("description", "")
+                hit_id = h.get("id", "Unknown")
             else:
-                name = getattr(h, 'name', 'Unknown')
-                api_name = getattr(h, 'api_name', None)
-                description = getattr(h, 'description', '')
-                hit_id = getattr(h, 'id', 'Unknown')
+                name = getattr(h, "name", "Unknown")
+                api_name = getattr(h, "api_name", None)
+                description = getattr(h, "description", "")
+                hit_id = getattr(h, "id", "Unknown")
             display_name = f"{name} ({api_name})" if api_name else name
             logger.info(f"  {i+1}. {display_name} (ID: {hit_id}) - {description}")
             tool_lines_list.append(f"{i+1}. {display_name} — {description}")
@@ -511,7 +566,9 @@ class BulletPlanReasoner(BaseReasoner):
         if isinstance(select_tool_template, dict):
             select_tool_template["inputs"]["goal"] = state.goal
             select_tool_template["inputs"]["plan_step"] = plan_step.text
-            select_tool_template["inputs"]["memory_keys"] = ", ".join(self.memory.keys())
+            select_tool_template["inputs"]["memory_keys"] = ", ".join(
+                self.memory.keys()
+            )
             select_tool_template["inputs"]["tool_candidates"] = tool_lines
             prompt = json.dumps(select_tool_template, ensure_ascii=False)
         else:
@@ -519,13 +576,15 @@ class BulletPlanReasoner(BaseReasoner):
                 goal=state.goal,
                 plan_step=plan_step.text,
                 memory_keys=", ".join(self.memory.keys()),
-                tool_candidates=tool_lines
+                tool_candidates=tool_lines,
             )
 
         try:
             # Add human guidance context if available
             context_aware_prompt = self._add_human_guidance_to_prompt(prompt)
-            response = self.llm.chat(messages=[{"role": "user", "content": context_aware_prompt}])
+            response = self.llm.chat(
+                messages=[{"role": "user", "content": context_aware_prompt}]
+            )
             raw_reply = response.strip()
             num_match = re.search(r"(\d+)", raw_reply)
             if num_match:
@@ -537,16 +596,36 @@ class BulletPlanReasoner(BaseReasoner):
                 logger.info(
                     "LLM selected tool #%s: %s (%s)",
                     tool_index + 1,
-                    selected_tool["id"] if isinstance(selected_tool, dict) else getattr(selected_tool, 'id', 'unknown'),
-                    selected_tool.get("name", "unnamed") if isinstance(selected_tool, dict) else getattr(selected_tool, 'name', 'unnamed'),
+                    (
+                        selected_tool["id"]
+                        if isinstance(selected_tool, dict)
+                        else getattr(selected_tool, "id", "unknown")
+                    ),
+                    (
+                        selected_tool.get("name", "unnamed")
+                        if isinstance(selected_tool, dict)
+                        else getattr(selected_tool, "name", "unnamed")
+                    ),
                 )
                 # store tool name
-                plan_step.tool_name = selected_tool.get("name", None) if isinstance(selected_tool, dict) else getattr(selected_tool, "name", None)
-                return selected_tool["id"] if isinstance(selected_tool, dict) else getattr(selected_tool, 'id', 'unknown')
+                plan_step.tool_name = (
+                    selected_tool.get("name", None)
+                    if isinstance(selected_tool, dict)
+                    else getattr(selected_tool, "name", None)
+                )
+                return (
+                    selected_tool["id"]
+                    if isinstance(selected_tool, dict)
+                    else getattr(selected_tool, "id", "unknown")
+                )
             # No valid tool selected
-            raise RuntimeError("LLM tool selection failed: No valid tool index or provider match. Aborting step.")
+            raise RuntimeError(
+                "LLM tool selection failed: No valid tool index or provider match. Aborting step."
+            )
         except (ValueError, IndexError, Exception) as e:
-            logger.error(f"Error during LLM tool selection: {e}. Using first search hit as fallback.")
+            logger.error(
+                f"Error during LLM tool selection: {e}. Using first search hit as fallback."
+            )
             return search_hits[0]["id"]
 
     # 3. ACT ------------------------------------------------------------
@@ -561,18 +640,24 @@ class BulletPlanReasoner(BaseReasoner):
         if tool_id in self.memory.keys():
             stored = self.memory.retrieve(tool_id)
             # If stored is a dict with an 'id' field, use that
-            if isinstance(stored, dict) and 'id' in stored:
-                logger.info(f"Resolved memory key '{tool_id}' to tool_id: {stored['id']}")
-                tool_id = stored['id']
+            if isinstance(stored, dict) and "id" in stored:
+                logger.info(
+                    f"Resolved memory key '{tool_id}' to tool_id: {stored['id']}"
+                )
+                tool_id = stored["id"]
             else:
-                logger.warning(f"Memory key '{tool_id}' did not resolve to a valid tool_id. Using as-is.")
+                logger.warning(
+                    f"Memory key '{tool_id}' did not resolve to a valid tool_id. Using as-is."
+                )
 
         logger.info("Loading tool information from Jentic")
         tool_info = self.jentic.load(tool_id)
         logger.debug(f"Tool info: {tool_info}")
 
         # Extract required fields if present
-        required_fields = tool_info.get('required', []) if isinstance(tool_info, dict) else []
+        required_fields = (
+            tool_info.get("required", []) if isinstance(tool_info, dict) else []
+        )
         logger.debug(f"Tool schema for parameter generation: {tool_info}")
 
         logger.info("Enumerating memory for prompt")
@@ -581,7 +666,7 @@ class BulletPlanReasoner(BaseReasoner):
 
         def _escape_braces(text: str) -> str:
             """Escape curly braces so str.format doesn't treat them as placeholders."""
-            return text.replace('{', '{{').replace('}', '}}')
+            return text.replace("{", "{{").replace("}", "}}")
 
         # Convert tool schema to string for formatting if it's a dict
         tool_schema_str = str(tool_info) if isinstance(tool_info, dict) else tool_info
@@ -589,8 +674,12 @@ class BulletPlanReasoner(BaseReasoner):
         param_generation_template = self._load_prompt("param_generation")
         if isinstance(param_generation_template, dict):
             param_generation_template["inputs"]["tool_id"] = tool_id
-            param_generation_template["inputs"]["tool_schema"] = _escape_braces(tool_schema_str)
-            param_generation_template["inputs"]["memory_enum"] = _escape_braces(memory_enum)
+            param_generation_template["inputs"]["tool_schema"] = _escape_braces(
+                tool_schema_str
+            )
+            param_generation_template["inputs"]["memory_enum"] = _escape_braces(
+                memory_enum
+            )
             param_generation_template["inputs"]["goal"] = state.goal
             prompt = json.dumps(param_generation_template, ensure_ascii=False)
         else:
@@ -608,7 +697,7 @@ class BulletPlanReasoner(BaseReasoner):
         logger.info("Calling LLM for parameter generation")
         args_json = self.llm.chat(messages=messages)
         logger.info(f"LLM parameter response:\n{args_json}")
-        
+
         try:
             logger.info("Parsing JSON parameters")
             args: Dict[str, Any] = self._safe_json_loads(args_json)
@@ -621,13 +710,15 @@ class BulletPlanReasoner(BaseReasoner):
         # Check for missing required fields and re-prompt if needed
         missing_fields = [field for field in required_fields if field not in args]
         if missing_fields:
-            logger.warning(f"Missing required fields in LLM output: {missing_fields}. Re-prompting LLM.")
-            # Add explicit instruction to include all required fields
-            explicit_prompt = (
-                f"{prompt}\n\nIMPORTANT: You MUST include all required fields in the parameters: {', '.join(required_fields)}."
+            logger.warning(
+                f"Missing required fields in LLM output: {missing_fields}. Re-prompting LLM."
             )
+            # Add explicit instruction to include all required fields
+            explicit_prompt = f"{prompt}\n\nIMPORTANT: You MUST include all required fields in the parameters: {', '.join(required_fields)}."
             # Add human guidance context for the re-prompt too
-            context_aware_explicit_prompt = self._add_human_guidance_to_prompt(explicit_prompt)
+            context_aware_explicit_prompt = self._add_human_guidance_to_prompt(
+                explicit_prompt
+            )
             messages = [{"role": "user", "content": context_aware_explicit_prompt}]
             args_json = self.llm.chat(messages=messages)
             logger.info(f"LLM parameter response (re-prompt):\n{args_json}")
@@ -637,7 +728,9 @@ class BulletPlanReasoner(BaseReasoner):
             except ValueError as e:
                 logger.error(f"Failed to parse JSON args after re-prompt: {e}")
                 logger.error(f"Raw args_json: {args_json}")
-                raise RuntimeError(f"LLM produced invalid JSON args after re-prompt: {e}\n{args_json}")
+                raise RuntimeError(
+                    f"LLM produced invalid JSON args after re-prompt: {e}\n{args_json}"
+                )
 
         # Host‑side memory placeholder substitution (simple impl)
         logger.info("Resolving memory placeholders")
@@ -649,13 +742,13 @@ class BulletPlanReasoner(BaseReasoner):
         # Support both dict and OperationResult
         success = None
         if isinstance(result, dict):
-            inner = result.get('result', None)
-            if hasattr(inner, 'success'):
-                success = getattr(inner, 'success', None)
+            inner = result.get("result", None)
+            if hasattr(inner, "success"):
+                success = getattr(inner, "success", None)
             elif isinstance(inner, dict):
-                success = inner.get('success', None)
-        elif hasattr(result, 'success'):
-            success = getattr(result, 'success', None)
+                success = inner.get("success", None)
+        elif hasattr(result, "success"):
+            success = getattr(result, "success", None)
         logger.info(f"Tool execution completed. Success: {success}")
         return result
 
@@ -683,10 +776,15 @@ class BulletPlanReasoner(BaseReasoner):
                 if not result_obj.success:
                     success = False
                     if hasattr(result_obj, "error") and result_obj.error:
-                        value_to_store = {"error": result_obj.error, "details": getattr(result_obj, "output", None)}
+                        value_to_store = {
+                            "error": result_obj.error,
+                            "details": getattr(result_obj, "output", None),
+                        }
                         logger.warning(f"Tool execution failed: {result_obj.error}")
                     else:
-                        value_to_store = {"error": "Tool execution failed without a specific message."}
+                        value_to_store = {
+                            "error": "Tool execution failed without a specific message."
+                        }
                 else:
                     # Only mark as done if .success is True
                     if hasattr(result_obj, "output"):
@@ -697,13 +795,16 @@ class BulletPlanReasoner(BaseReasoner):
                     value_to_store = result_obj.output
 
         # Case 2: Reasoning step result (raw string or dict)
-        elif isinstance(observation, str) and observation.strip().lower() in ("null", ""):
+        elif isinstance(observation, str) and observation.strip().lower() in (
+            "null",
+            "",
+        ):
             success = False
             value_to_store = {"error": "Reasoning step produced no output."}
             logger.warning(value_to_store["error"])
         elif isinstance(observation, dict) and "error" in observation:
             success = False
-            value_to_store = observation # Keep the error info
+            value_to_store = observation  # Keep the error info
             logger.warning(f"Reasoning step returned an error: {observation['error']}")
 
         current_step.result = value_to_store
@@ -713,7 +814,9 @@ class BulletPlanReasoner(BaseReasoner):
             logger.debug(f"Step status updated to: {current_step.status}")
 
             if current_step.store_key:
-                logger.info(f"Storing result in memory with key: {current_step.store_key}")
+                logger.info(
+                    f"Storing result in memory with key: {current_step.store_key}"
+                )
                 self.memory.set(
                     key=current_step.store_key,
                     value=value_to_store,
@@ -730,7 +833,9 @@ class BulletPlanReasoner(BaseReasoner):
         else:
             current_step.status = "failed"
             state.failed = True
-            logger.warning(f"Step '{current_step.text}' failed. Marking plan as failed.")
+            logger.warning(
+                f"Step '{current_step.text}' failed. Marking plan as failed."
+            )
             history_entry = f"{current_step.text} -> failed"
             state.history.append(history_entry)
             # We do NOT pop the step, allowing reflection to potentially fix it.
@@ -760,8 +865,10 @@ class BulletPlanReasoner(BaseReasoner):
 
     # 6. REFLECT (optional) --------------------------------------------
     def reflect(self, current_step: Step, err_msg: str, state: "ReasonerState") -> bool:
-        logger.info(f"Reflecting on failed step: {current_step.text} | Error: {err_msg} | Attempts: {current_step.reflection_attempts}")
-        
+        logger.info(
+            f"Reflecting on failed step: {current_step.text} | Error: {err_msg} | Attempts: {current_step.reflection_attempts}"
+        )
+
         # Limit reflection attempts to prevent infinite loops
         if current_step.reflection_attempts >= MAX_REFLECTION_ATTEMPTS:
             logger.warning(
@@ -769,9 +876,9 @@ class BulletPlanReasoner(BaseReasoner):
                 MAX_REFLECTION_ATTEMPTS,
             )
             return False
-            
+
         current_step.reflection_attempts += 1
-        
+
         reflection_template = self._load_prompt("reflection_prompt")
         if isinstance(reflection_template, dict):
             reflection_template["inputs"]["goal"] = state.goal
@@ -784,25 +891,34 @@ class BulletPlanReasoner(BaseReasoner):
                 goal=state.goal,
                 failed_step_text=current_step.text,
                 error_message=err_msg,
-                history="\n".join(state.history)
+                history="\n".join(state.history),
             )
 
         logger.info("Calling LLM for reflection")
         # Add human guidance context if available
         context_aware_prompt = self._add_human_guidance_to_prompt(prompt)
-        revised_step = self.llm.chat(messages=[{"role": "user", "content": context_aware_prompt}]).strip()
+        revised_step = self.llm.chat(
+            messages=[{"role": "user", "content": context_aware_prompt}]
+        ).strip()
 
         # Process for escalation during reflection
         context = f"Step: {current_step.text}\nPhase: Reflection\nError: {err_msg}\nGoal: {state.goal}"
-        processed_step = self._process_llm_response_for_escalation(revised_step, context)
-        
+        processed_step = self._process_llm_response_for_escalation(
+            revised_step, context
+        )
+
         if processed_step != revised_step:
             # Human provided guidance during reflection
             logger.info("Reflection escalated to human, using human guidance")
             # Instead of replacing step text, revise it to incorporate human guidance
-            if current_step.text.lower().startswith("execute") or "channel" in current_step.text.lower():
+            if (
+                current_step.text.lower().startswith("execute")
+                or "channel" in current_step.text.lower()
+            ):
                 # For execution steps, try to integrate the human response contextually
-                current_step.text = f"Execute Discord operation with channel_id: {processed_step}"
+                current_step.text = (
+                    f"Execute Discord operation with channel_id: {processed_step}"
+                )
             else:
                 current_step.text = processed_step
             current_step.status = "pending"
@@ -810,11 +926,15 @@ class BulletPlanReasoner(BaseReasoner):
             return True
 
         if "AUTH_FAILURE" in processed_step:
-            logger.error("Reflection indicates an unrecoverable authentication failure.")
+            logger.error(
+                "Reflection indicates an unrecoverable authentication failure."
+            )
             return False
 
         if processed_step:
-            logger.info(f"LLM revised step from '{current_step.text}' to '{processed_step}'")
+            logger.info(
+                f"LLM revised step from '{current_step.text}' to '{processed_step}'"
+            )
             current_step.text = processed_step
             current_step.status = "pending"
             current_step.tool_id = None
@@ -831,11 +951,26 @@ class BulletPlanReasoner(BaseReasoner):
         text_lower = step.text.lower()
 
         tool_verbs = [
-            "send", "post", "create", "add", "upload", "delete", "get",
-            "retrieve", "access", "list", "search", "find",
+            "send",
+            "post",
+            "create",
+            "add",
+            "upload",
+            "delete",
+            "get",
+            "retrieve",
+            "access",
+            "list",
+            "search",
+            "find",
         ]
         reasoning_verbs = [
-            "analyze", "extract", "identify", "summarize", "summary", "summaries",
+            "analyze",
+            "extract",
+            "identify",
+            "summarize",
+            "summary",
+            "summaries",
         ]
 
         # TOOL_USING if any tool verb appears
@@ -849,7 +984,9 @@ class BulletPlanReasoner(BaseReasoner):
                 # This is a heuristic to see if the step has data to operate on.
                 all_memory_keys = self.memory.keys()
                 if any(key in text_lower for key in all_memory_keys):
-                    logger.info("Classifying as REASONING because step references existing memory.")
+                    logger.info(
+                        "Classifying as REASONING because step references existing memory."
+                    )
                     return StepType.REASONING
             except Exception:  # noqa: BLE001
                 # If memory access fails for some reason, fall through.
@@ -874,7 +1011,9 @@ class BulletPlanReasoner(BaseReasoner):
         # 1. Explicitly include any key that appears in the step text (e.g. "search_results").
         # 2. For other keys, include only a truncated preview to keep token usage reasonable.
         mem_payload: Dict[str, Any] = {}
-        referenced_keys = {k for k in getattr(self.memory, 'keys', lambda: [])() if k in step.text}
+        referenced_keys = {
+            k for k in getattr(self.memory, "keys", lambda: [])() if k in step.text
+        }
 
         try:
             all_keys = self.memory.keys()
@@ -888,7 +1027,9 @@ class BulletPlanReasoner(BaseReasoner):
                     if isinstance(v, str):
                         mem_payload[k] = v[:200] + ("…" if len(v) > 200 else "")
                     else:
-                        mem_payload[k] = v  # non-string values are usually small JSON anyway
+                        mem_payload[k] = (
+                            v  # non-string values are usually small JSON anyway
+                        )
         except Exception as exc:  # noqa: BLE001
             logger.debug("Could not build memory payload: %s", exc)
 
@@ -899,20 +1040,23 @@ class BulletPlanReasoner(BaseReasoner):
             reasoning_prompt = json.dumps(reasoning_template, ensure_ascii=False)
         else:
             reasoning_prompt = reasoning_template.format(
-                step=step.text,
-                mem=json.dumps(mem_payload, indent=2)
+                step=step.text, mem=json.dumps(mem_payload, indent=2)
             )
 
         try:
             # Add human guidance context if available
-            context_aware_reasoning_prompt = self._add_human_guidance_to_prompt(reasoning_prompt)
-            reply = self.llm.chat(messages=[{"role": "user", "content": context_aware_reasoning_prompt}]).strip()
+            context_aware_reasoning_prompt = self._add_human_guidance_to_prompt(
+                reasoning_prompt
+            )
+            reply = self.llm.chat(
+                messages=[{"role": "user", "content": context_aware_reasoning_prompt}]
+            ).strip()
             logger.debug("Reasoning LLM reply: %s", reply)
 
             # Process for escalation
             context = f"Step: {step.text}\nPhase: Reasoning\nGoal: {state.goal}"
             processed_reply = self._process_llm_response_for_escalation(reply, context)
-            
+
             if processed_reply != reply:
                 # Human provided guidance, use it as the reasoning result
                 logger.info("Reasoning step escalated, using human guidance as result")
@@ -927,7 +1071,7 @@ class BulletPlanReasoner(BaseReasoner):
                 except json.JSONDecodeError:
                     # Not valid JSON, fall through to treat as a raw string
                     pass
-        
+
             return self._resolve_placeholders(processed_reply)
         except Exception as exc:  # noqa: BLE001
             logger.error("Reasoning step failed: %s", exc)
@@ -939,8 +1083,10 @@ class BulletPlanReasoner(BaseReasoner):
 
     def run(self, goal: str, max_iterations: int = 10):  # type: ignore[override]
         """Execute the reasoning loop until all plan steps are done or iteration cap reached."""
-        logger.info(f"Reasoning started for goal: {goal} | Max iterations: {max_iterations}")
-        
+        logger.info(
+            f"Reasoning started for goal: {goal} | Max iterations: {max_iterations}"
+        )
+
         from .base_reasoner import ReasoningResult  # local import to avoid circular
 
         state = self._init_state(goal, {})
@@ -952,24 +1098,28 @@ class BulletPlanReasoner(BaseReasoner):
 
             # If the plan failed in a previous iteration, and reflection didn't fix it, stop.
             if state.failed:
-                logger.error("A step has failed and could not be recovered. Terminating loop.")
+                logger.error(
+                    "A step has failed and could not be recovered. Terminating loop."
+                )
                 break
 
             # Check if goal is already marked as completed
             if state.goal_completed:
                 logger.info("Goal marked as completed! Breaking from loop")
                 break
-            
+
             # Agent can proactively check if it needs human help before proceeding
-            if iteration > 0 and self._should_check_for_human_guidance(state, iteration):
+            if iteration > 0 and self._should_check_for_human_guidance(
+                state, iteration
+            ):
                 if self._check_for_proactive_escalation(state, iteration):
                     continue  # Human guidance may have modified the state
-            
+
             # Ensure we have at least one step planned.
             if iteration == 0 and not state.plan:
                 logger.info("Generating plan for goal.")
                 self.plan(state)
-            
+
             # If the plan is empty, we are done.
             if not state.plan:
                 logger.info("Plan empty. Marking goal as complete.")
@@ -980,9 +1130,11 @@ class BulletPlanReasoner(BaseReasoner):
             # If the current step is already 'done' or 'failed', something is wrong.
             # This can happen if reflection logic is faulty. For now, we'll log and skip.
             if current_step.status not in ("pending", "running"):
-                 logger.warning(f"Skipping step '{current_step.text}' with unexpected status '{current_step.status}'")
-                 state.plan.popleft()
-                 continue
+                logger.warning(
+                    f"Skipping step '{current_step.text}' with unexpected status '{current_step.status}'"
+                )
+                state.plan.popleft()
+                continue
 
             logger.info(f"Executing step: {current_step.text}")
 
@@ -1006,18 +1158,22 @@ class BulletPlanReasoner(BaseReasoner):
                             value={"id": tool_id},
                             description=f"Tool ID for step '{current_step.text}'",
                         )
-                        logger.debug(f"Stored tool_id in memory with key '{current_step.store_key}'")
+                        logger.debug(
+                            f"Stored tool_id in memory with key '{current_step.store_key}'"
+                        )
                     result = {"tool_id": tool_id}
                 elif step_type == "EXECUTE":
                     tool_id = self.select_tool(current_step, state)
                     logger.info(f"Tool selected: {tool_id} ({current_step.tool_name})")
                     result = self.act(tool_id, state, current_step)
                     logger.info(f"Action result type: {type(result)}")
-                    tool_calls.append({
-                        "tool_id": tool_id,
-                        "step": current_step.text,
-                        "result": result,
-                    })
+                    tool_calls.append(
+                        {
+                            "tool_id": tool_id,
+                            "step": current_step.text,
+                            "result": result,
+                        }
+                    )
                 elif step_type == "REASON":
                     result = self._execute_reasoning_step(current_step, state)
                     logger.info("Reasoning step completed.")
@@ -1026,38 +1182,50 @@ class BulletPlanReasoner(BaseReasoner):
                     logger.info(f"Tool selected: {tool_id} ({current_step.tool_name})")
                     result = self.act(tool_id, state, current_step)
                     logger.info(f"Action result type: {type(result)}")
-                    tool_calls.append({
-                        "tool_id": tool_id,
-                        "step": current_step.text,
-                        "result": result,
-                    })
+                    tool_calls.append(
+                        {
+                            "tool_id": tool_id,
+                            "step": current_step.text,
+                            "result": result,
+                        }
+                    )
                 elif step_type in ["REASONING"]:  # Support both formats
                     result = self._execute_reasoning_step(current_step, state)
                     logger.info("Reasoning step completed.")
                 else:
-                    logger.warning(f"Unknown step_type '{step_type}', defaulting to EXECUTE.")
+                    logger.warning(
+                        f"Unknown step_type '{step_type}', defaulting to EXECUTE."
+                    )
                     tool_id = self.select_tool(current_step, state)
                     logger.info(f"Tool selected: {tool_id} ({current_step.tool_name})")
                     result = self.act(tool_id, state, current_step)
                     logger.info(f"Action result type: {type(result)}")
-                    tool_calls.append({
-                        "tool_id": tool_id,
-                        "step": current_step.text,
-                        "result": result,
-                    })
+                    tool_calls.append(
+                        {
+                            "tool_id": tool_id,
+                            "step": current_step.text,
+                            "result": result,
+                        }
+                    )
 
                 self.observe(result, state)
-                
+
                 # Check if the step failed after observation and trigger reflection
                 if state.failed and current_step.status == "failed":
                     logger.info("Step failed after observation, attempting reflection.")
-                    error_msg = getattr(current_step.result, 'error', str(current_step.result)) if hasattr(current_step.result, 'error') else str(current_step.result)
+                    error_msg = (
+                        getattr(current_step.result, "error", str(current_step.result))
+                        if hasattr(current_step.result, "error")
+                        else str(current_step.result)
+                    )
                     if self.reflect(current_step, error_msg, state):
                         logger.info("Step revised after failure, retrying.")
                         state.failed = False
                     else:
-                        logger.warning("Reflection failed after step failure. Ending reasoning loop.")
-                
+                        logger.warning(
+                            "Reflection failed after step failure. Ending reasoning loop."
+                        )
+
             except Exception as e:  # noqa: BLE001
                 logger.error(f"Step execution failed: {e}")
                 logger.info("Attempting reflection on failed step.")
@@ -1067,45 +1235,58 @@ class BulletPlanReasoner(BaseReasoner):
                 else:
                     logger.warning("Reflection failed. Ending reasoning loop.")
 
-
             iteration += 1
-        logger.info(f"Reasoning loop complete. Success: {state.goal_completed or not state.failed}")
+        logger.info(
+            f"Reasoning loop complete. Success: {state.goal_completed or not state.failed}"
+        )
         logger.info(f"Total tool calls: {len(tool_calls)}")
-        final_answer = "Goal completed." if state.goal_completed else "Unable to complete goal."
+        final_answer = (
+            "Goal completed." if state.goal_completed else "Unable to complete goal."
+        )
         logger.info(f"Final answer: {final_answer}")
         if state.goal_completed:
-            tool_summary = "\n  Used tool(s):\n" + "\n".join([
-                f"    {call['tool_id']} — {call['step']}" for call in tool_calls
-            ])
-            logger.info(f"\n✅ Goal Completed Successfully\n{final_answer}\n{tool_summary}")
+            tool_summary = "\n  Used tool(s):\n" + "\n".join(
+                [f"    {call['tool_id']} — {call['step']}" for call in tool_calls]
+            )
+            logger.info(
+                f"\n✅ Goal Completed Successfully\n{final_answer}\n{tool_summary}"
+            )
         result = ReasoningResult(
             final_answer=final_answer,
             iterations=len(tool_calls),
             tool_calls=tool_calls,
             success=state.goal_completed,
-            error_message=None if state.goal_completed else "Max iterations reached or failure during steps",
+            error_message=(
+                None
+                if state.goal_completed
+                else "Max iterations reached or failure during steps"
+            ),
         )
         logger.info(f"Returning result: {result}")
         return result
-    
-    def _should_check_for_human_guidance(self, state: ReasonerState, iteration: int) -> bool:
+
+    def _should_check_for_human_guidance(
+        self, state: ReasonerState, iteration: int
+    ) -> bool:
         """Determine if the agent should proactively check for human guidance."""
         if not self.escalation.is_available():
             return False
-            
+
         # Let the agent decide every few iterations if it wants to check for guidance
         # Remove automatic failure/complexity triggers - agent should decide
         return iteration > 0 and iteration % 4 == 0  # Check every 4 iterations
-    
-    def _check_for_proactive_escalation(self, state: ReasonerState, iteration: int) -> bool:
+
+    def _check_for_proactive_escalation(
+        self, state: ReasonerState, iteration: int
+    ) -> bool:
         """Let the agent proactively ask for human guidance."""
         if not self.escalation.is_available():
             return False
-            
+
         # Build context for the agent to decide
         remaining_steps = list(state.plan)
         recent_failures = [h for h in state.history if "failed" in h.lower()]
-        
+
         escalation_check_prompt = f"""
 You are working on the goal: "{state.goal}"
 
@@ -1134,17 +1315,23 @@ Respond with:
 Your choice:"""
 
         try:
-            response = self.llm.chat(messages=[{"role": "user", "content": escalation_check_prompt}]).strip()
+            response = self.llm.chat(
+                messages=[{"role": "user", "content": escalation_check_prompt}]
+            ).strip()
             logger.info(f"Proactive escalation check response: {response}")
-            
+
             # Process escalation request
-            context = f"Goal: {state.goal}\nIteration: {iteration}\nPhase: Proactive Check"
-            processed_response = self._process_llm_response_for_escalation(response, context)
-            
+            context = (
+                f"Goal: {state.goal}\nIteration: {iteration}\nPhase: Proactive Check"
+            )
+            processed_response = self._process_llm_response_for_escalation(
+                response, context
+            )
+
             if processed_response != response:
                 # Human provided guidance, incorporate it
                 logger.info("Agent proactively escalated, incorporating human guidance")
-                
+
                 # Update goal or add guidance to history
                 if "goal:" in processed_response.lower():
                     # Update goal if human provided clarification
@@ -1153,18 +1340,18 @@ Your choice:"""
                 else:
                     # Add as contextual guidance
                     state.history.append(f"Human guidance: {processed_response}")
-                
+
                 return True
-                
+
         except Exception as e:
             logger.warning(f"Proactive escalation check failed: {e}")
-        
+
         return False
 
     # ------------------------------------------------------------------
     # Human guidance integration helpers
     # ------------------------------------------------------------------
-    
+
     def _add_human_guidance_to_prompt(self, base_prompt: str) -> str:
         """Add recent human guidance from memory to prompts."""
         try:
@@ -1192,7 +1379,7 @@ Your choice:"""
             raise RuntimeError("No fenced plan in LLM response")
         fenced = m.group(0)
         logger.debug(f"Found fenced block: {fenced}")
-        
+
         # Remove opening and closing fences (```)
         inner = fenced.strip("`")  # remove all backticks at ends
         # After stripping, drop any leading language hint (e.g. ```markdown)
@@ -1229,6 +1416,8 @@ Your choice:"""
             return sanitized
         except KeyError as e:
             logger.warning(f"Memory placeholder resolution failed: {e}")
-            logger.warning("Continuing with unresolved placeholders - this may cause tool execution to fail")
+            logger.warning(
+                "Continuing with unresolved placeholders - this may cause tool execution to fail"
+            )
             # Return the original object with unresolved placeholders
             return obj

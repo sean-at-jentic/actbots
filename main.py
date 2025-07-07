@@ -14,7 +14,7 @@ SETUP INSTRUCTIONS:
    {
      "llm": {
        "provider": "openai",    // or "gemini", or "anthropic"
-       "model": "gpt-4o"        // or your preferred model 
+       "model": "gpt-4o"        // or your preferred model
      }
    }
 
@@ -29,7 +29,7 @@ SETUP INSTRUCTIONS:
 
 import argparse
 import logging
-import os, json
+import os
 import sys
 
 from dotenv import load_dotenv
@@ -42,31 +42,31 @@ from jentic_agents.agents.simple_ui_agent import SimpleUIAgent
 from jentic_agents.communication import CLIController
 from jentic_agents.memory.scratch_pad import ScratchPadMemory
 from jentic_agents.communication.inbox.cli_inbox import CLIInbox
-from jentic_agents.memory.agent_memory import create_agent_memory
 from jentic_agents.platform.jentic_client import JenticClient
 from jentic_agents.reasoners.bullet_list_reasoner import BulletPlanReasoner
-from jentic_agents.reasoners.freeform_reasoner import FreeformReasoner
-from jentic_agents.reasoners.standard_reasoner import StandardReasoner
 
 from jentic_agents.utils.llm import LiteLLMChatLLM
-from jentic_agents.utils.config import get_config, get_config_value
+from jentic_agents.utils.config import get_config_value
 
 logging.getLogger("litellm").setLevel(logging.WARNING)
 logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+
 
 def main():
 
     parser = argparse.ArgumentParser(description="ActBots Live Demo")
     parser.add_argument(
-        "--mode", 
-        choices=["cli", "ui"], 
+        "--mode",
+        choices=["cli", "ui"],
         default="cli",
-        help="Interface mode: 'cli' for command line, 'ui' for graphical interface (default: cli)"
+        help="Interface mode: 'cli' for command line, 'ui' for graphical interface (default: cli)",
     )
     args = parser.parse_args()
 
     load_dotenv()
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    )
     logging.getLogger("openai").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
@@ -94,7 +94,9 @@ def main():
         sys.exit(1)
 
     if provider == "anthropic" and not os.getenv("ANTHROPIC_API_KEY"):
-        print("ERROR: LLM provider is Anthropic but ANTHROPIC_API_KEY is not set in .env.")
+        print(
+            "ERROR: LLM provider is Anthropic but ANTHROPIC_API_KEY is not set in .env."
+        )
         sys.exit(1)
 
     try:
@@ -152,4 +154,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()
