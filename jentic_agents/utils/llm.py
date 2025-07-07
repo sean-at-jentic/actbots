@@ -1,8 +1,9 @@
-"""Lightweight LLM wrapper interfaces used by reasoners."""
+"""LiteLLM wrapper for the Jentic Agents."""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional
+from typing import List, Dict
+import os, json
 
 
 class BaseLLM(ABC):
@@ -18,15 +19,22 @@ class BaseLLM(ABC):
 
 
 class LiteLLMChatLLM(BaseLLM):
-    """Wrapper around litellm.completion."""
-
     def __init__(
         self,
-        model: str = "gpt-4",
+        model: str | None = None,
         temperature: float = 0.2,
         max_tokens: int | None = None,
     ) -> None:
         import litellm
+        if model is None:
+            try:
+                root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+                with open(os.path.join(root, "config.json"), "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                model = cfg.get("llm", {}).get("model", "gpt-4o")
+            except Exception:
+                model = "gpt-4o"
+
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -40,4 +48,4 @@ class LiteLLMChatLLM(BaseLLM):
             max_tokens=kwargs.get("max_tokens", self.max_tokens),
         )
         content = resp.choices[0].message.content
-        return content or ""  # Avoid None propagating 
+        return content or ""  

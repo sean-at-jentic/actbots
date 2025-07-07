@@ -103,7 +103,7 @@ BULLET_RE = re.compile(r"^(?P<indent>\s*)([-*]|\d+\.)\s+(?P<content>.+)$")
 
 
 def parse_bullet_plan(markdown: str) -> deque[Step]:
-    """Very lenient parser that turns an indented bullet list OR JSON array into Step objects."""
+    """Parser to turn an indented bullet list OR JSON array into Step objects."""
     # Use shared helper for fence stripping
     markdown_stripped = strip_backtick_fences(markdown)
     # Now check for JSON array
@@ -190,11 +190,6 @@ def parse_bullet_plan(markdown: str) -> deque[Step]:
     return deque(leaf_steps)
 
 
-# ---------------------------------------------------------------------------
-# BulletPlanReasoner implementation
-# ---------------------------------------------------------------------------
-
-
 class BulletPlanReasoner(BaseReasoner):
     """Concrete Reasoner that follows the BulletPlan strategy."""
 
@@ -213,9 +208,6 @@ class BulletPlanReasoner(BaseReasoner):
             logger.error(f"Prompt file not found: {prompt_path}")
             raise RuntimeError(f"Prompt file not found: {prompt_path}")
 
-    # -------------------------------------------------------------------
-    # Heuristic search helpers (generic, no hard-coding)
-    # -------------------------------------------------------------------
 
     def _build_search_query(self, step: "Step") -> str:
         """
