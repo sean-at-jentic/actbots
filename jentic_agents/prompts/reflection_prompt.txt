@@ -1,0 +1,15 @@
+{
+  "instruction": "Reflect on a failed plan step and suggest a revised step to overcome the failure.",
+  "inputs": {
+    "goal": "{goal}",
+    "failed_step_text": "{failed_step_text}",
+    "error_message": "{error_message}",
+    "history": "{history}"
+  },
+  "rules": [
+    "Analyze the failed step and error message.",
+    "Suggest a revised step that addresses the failure and can be retried.",
+    "If the failure is unrecoverable, respond with 'AUTH_FAILURE' or a clear signal.",
+    "Do not include any explanation or extra text."
+  ]
+}

@@ -1,27 +1,130 @@
-You are a confident planning assistant. Given the user goal below, output a
-*markdown bullet list* plan to achieve it.
+{
+  "instruction": "Generate a concrete, API-centric multi-step plan to accomplish the given goal using Jentic tools (search_apis, load_execution_info, execute, etc.). Your plan should assume the agent has access to Jentic's unified API hub where it can discover and run operations from many providers.",
 
-Requirements:
-• Each action is on its own line, starting with "- ".  Use 2 spaces
-  per indentation level to indicate sub‑steps.
-• Be concrete and include the target object and purpose.
-• If a step's result should be kept for later, append "-> store:
-  <key>" where <key> is a short variable name.
-• For steps that might fail (e.g., finding an item), add a sub-bullet with a backup plan starting with `-> if fails:`.
-• Do not mention any specific external tool names.
-• Enclose ONLY the list in triple backticks.
-• Always append the goal to the end of each step.
-• Make reasonable assumptions about the goal - only ask for clarification if genuinely ambiguous.
+  "context": "Jentic workflow: 1) search_apis → 2) load_execution_info → 3) execute. The agent can chain multiple APIs across different vendors. Use already-known IDs (e.g., channel_id, guild_id) directly; only add discovery steps when information is missing. STEP IDENTIFICATION: Use multi-step when the goal requires data from one operation to complete another (dependency chain). Use single-step when all required information is directly available or can be inferred from the goal.",
 
-Example:
-Goal: 'Find an interesting nytimes article that came out recently'
+  "inputs": {
+    "goal": "{goal}"
+  },
 
-```
-- Find recent news articles about 'artificial intelligence' -> store: search_results (goal: Find an interesting nytimes article that came out recently)
-  -> if fails: Report that the article search failed.
-- From the search_results, identify the most interesting article -> store: interesting_article (goal: Find an interesting nytimes article that came out recently)
-  -> if fails: Report that no interesting articles were found.
-- Return the article_info to the user (goal: Find an interesting nytimes article that came out recently)
-```
+  "rules": [
+    "Output a valid JSON array of step objects, with no markdown, dashes, or extra text.",
+    "Each step MUST be a JSON object with at least 'step_type', 'text', and optionally 'store_key' fields.",
+    "Each step MUST include a 'step_type' field: 'SEARCH', 'EXECUTE', or 'REASON'.",
+    "If a step calls a tool and returns data needed later, append 'store_key' to save the result for later steps.",
+    "CRITICAL: Break down complex operations requiring data lookup into multiple logical steps. Use this pattern: SEARCH (find operation) → EXECUTE (get data) → REASON (extract needed info) → SEARCH (find target operation) → EXECUTE (perform action).",
+    "Multi-step is required when: creating items that need parent IDs, updating objects that need current state, performing actions on named resources, or when URLs contain IDs but specific child IDs are needed.",
+    "Single-step is sufficient when: all required parameters are directly available, performing simple lookups, or when the operation doesn't depend on other data.",
+    "If the goal provides URLs but you need specific child IDs (like list IDs from board URLs), add steps to extract or look up those IDs first.",
+    "If required data is missing or needs to be resolved from names/URLs, add a step to search for or retrieve it first.",
+    "Never mention login/auth steps or specific tool IDs; describe the action generically.",
+    "Be explicit about the target object and purpose in each step.",
+    "Always append the full goal in parentheses at the end of each step (in the 'text' field).",
+    "Use multiple APIs if necessary to reach the goal, but avoid redundant operations.",
+    "For operations that need specific IDs from URLs or names, create dedicated lookup/extraction steps before the main action.",
+    "Store intermediate results with descriptive keys for use in subsequent steps (e.g., 'target_list_id', 'board_data', 'user_info').",
+    "IMPORTANT: Wrap your entire JSON array output in a markdown code block with triple backticks and json, like this: ``` ... ```"
+  ],
 
-Real Goal: {goal}
+  "step_identification_guide": {
+    "use_multi_step_when": [
+      "Goal mentions creating/adding items to a named container (e.g., 'add card to Todo list', 'create issue in project')",
+      "Goal provides parent URLs but needs child IDs (e.g., board URL but need list ID)",
+      "Goal involves updating existing resources that require current state",
+      "Goal mentions performing actions on named resources that need ID lookup",
+      "Goal requires data from one API call to complete another API call"
+    ],
+    "use_single_step_when": [
+      "All required IDs/parameters are directly provided or easily extractable",
+      "Goal is a simple lookup or read operation",
+      "Goal involves direct actions with known entities",
+      "No dependency chain between operations exists"
+    ],
+    "pattern_examples": {
+      "lookup_then_action": "SEARCH (find lookup op) → EXECUTE (get data) → REASON (extract ID) → SEARCH (find action op) → EXECUTE (perform action)",
+      "state_then_update": "SEARCH (find get op) → EXECUTE (get current state) → REASON (identify changes) → SEARCH (find update op) → EXECUTE (apply changes)",
+      "direct_action": "SEARCH (find operation) → EXECUTE (perform action)"
+    }
+  },
+
+  "precedence_hierarchy": {
+    "decision_order": [
+      "1. ANALYZE GOAL: Does it require data from one operation to complete another?",
+      "2. CHECK DEPENDENCIES: Are there parent-child relationships (board→list, org→repo, etc.)?",
+      "3. EVALUATE INFORMATION: Are all required IDs/parameters directly available?",
+      "4. DETERMINE COMPLEXITY: Simple lookup vs. create/update operations?"
+    ],
+    "multi_step_takes_precedence_when": [
+      "ANY dependency chain exists between operations",
+      "Goal contains words like 'add to', 'create in', 'update existing'",
+      "URLs provided but child IDs needed (board URL → list ID)",
+      "Named resources mentioned that require ID resolution"
+    ],
+    "single_step_override_when": [
+      "All parameters explicitly provided in goal",
+      "Direct action verbs with known entities (send, get, delete + specific ID)",
+      "Simple read operations without dependencies"
+    ],
+    "when_in_doubt": "Default to multi-step to ensure proper data lookup"
+  },
+
+  "examples": [
+    {
+      "goal": "Send a message to a specific channel",
+      "output": [
+        {"step_type": "SEARCH", "text": "Search for an operation that sends messages to channels (goal: Send a message to a specific channel)", "store_key": "send_op"},
+        {"step_type": "EXECUTE", "text": "Execute send_op with the target channel and message content (goal: Send a message to a specific channel)"}
+      ]
+    },
+    {
+      "goal": "Post a message in a channel by name",
+      "output": [
+        {"step_type": "SEARCH", "text": "Search for an operation that lists channels in the workspace (goal: Post a message in a channel by name)", "store_key": "list_channels_op"},
+        {"step_type": "EXECUTE", "text": "Execute list_channels_op to get all channels (goal: Post a message in a channel by name)", "store_key": "channels"},
+        {"step_type": "REASON", "text": "From channels data, find the channel_id for the target channel name (goal: Post a message in a channel by name)", "store_key": "target_channel"},
+        {"step_type": "SEARCH", "text": "Search for an operation that sends a message to a channel (goal: Post a message in a channel by name)", "store_key": "send_op"},
+        {"step_type": "EXECUTE", "text": "Execute send_op with channel_id from target_channel and message content (goal: Post a message in a channel by name)"}
+      ]
+    },
+    {
+      "goal": "Add an item to a list using a board URL",
+      "output": [
+        {"step_type": "SEARCH", "text": "Search for an operation that gets board details or lists (goal: Add an item to a list using a board URL)", "store_key": "get_board_op"},
+        {"step_type": "EXECUTE", "text": "Execute get_board_op with board_id extracted from URL to get board lists (goal: Add an item to a list using a board URL)", "store_key": "board_lists"},
+        {"step_type": "REASON", "text": "From board_lists, find the list_id for the target list (goal: Add an item to a list using a board URL)", "store_key": "target_list_id"},
+        {"step_type": "SEARCH", "text": "Search for an operation that adds an item to a list (goal: Add an item to a list using a board URL)", "store_key": "add_item_op"},
+        {"step_type": "EXECUTE", "text": "Execute add_item_op with list_id from target_list_id and item details (goal: Add an item to a list using a board URL)"}
+      ]
+    },
+    {
+      "goal": "Create a new repository in an organization",
+      "output": [
+        {"step_type": "SEARCH", "text": "Search for an operation that lists organizations or gets organization details (goal: Create a new repository in an organization)", "store_key": "get_org_op"},
+        {"step_type": "EXECUTE", "text": "Execute get_org_op to get organization information and permissions (goal: Create a new repository in an organization)", "store_key": "org_data"},
+        {"step_type": "REASON", "text": "From org_data, extract the organization_id and verify creation permissions (goal: Create a new repository in an organization)", "store_key": "validated_org_id"},
+        {"step_type": "SEARCH", "text": "Search for an operation that creates a repository (goal: Create a new repository in an organization)", "store_key": "create_repo_op"},
+        {"step_type": "EXECUTE", "text": "Execute create_repo_op with organization_id from validated_org_id and repository details (goal: Create a new repository in an organization)"}
+      ]
+    },
+    {
+      "goal": "Update user profile information",
+      "output": [
+        {"step_type": "SEARCH", "text": "Search for an operation that gets current user profile (goal: Update user profile information)", "store_key": "get_profile_op"},
+        {"step_type": "EXECUTE", "text": "Execute get_profile_op to retrieve current profile data (goal: Update user profile information)", "store_key": "current_profile"},
+        {"step_type": "REASON", "text": "From current_profile, identify which fields need updating and preserve existing values (goal: Update user profile information)", "store_key": "profile_changes"},
+        {"step_type": "SEARCH", "text": "Search for an operation that updates user profile (goal: Update user profile information)", "store_key": "update_profile_op"},
+        {"step_type": "EXECUTE", "text": "Execute update_profile_op with changes from profile_changes merged with current data (goal: Update user profile information)"}
+      ]
+    },
+    {
+      "goal": "Schedule a meeting with team members",
+      "output": [
+        {"step_type": "SEARCH", "text": "Search for an operation that gets team member information or contact details (goal: Schedule a meeting with team members)", "store_key": "get_team_op"},
+        {"step_type": "EXECUTE", "text": "Execute get_team_op to retrieve team member list and availability (goal: Schedule a meeting with team members)", "store_key": "team_data"},
+        {"step_type": "REASON", "text": "From team_data, extract member IDs and determine optimal meeting time (goal: Schedule a meeting with team members)", "store_key": "meeting_details"},
+        {"step_type": "SEARCH", "text": "Search for an operation that creates calendar events or meetings (goal: Schedule a meeting with team members)", "store_key": "create_meeting_op"},
+        {"step_type": "EXECUTE", "text": "Execute create_meeting_op with member IDs from meeting_details and scheduling information (goal: Schedule a meeting with team members)"}
+      ]
+    }
+  ]
+}

@@ -44,14 +44,14 @@ class StandardReasoner(BaseReasoner):
         """
         Execute the reasoning loop for a given goal.
         """
-        logger.info(f"Starting reasoning for goal: {goal}")
+        logger.info(f"Reasoning started for goal: {goal} | Max iterations: {max_iterations}")
         
         observations: List[str] = []
         tool_calls: List[Dict[str, Any]] = []
         failed_attempts: List[str] = []
         
         for iteration in range(max_iterations):
-            logger.info(f"Reasoning iteration {iteration + 1}/{max_iterations}")
+            logger.info(f"Iteration {iteration + 1}/{max_iterations}")
             
             try:
                 context = {
@@ -79,9 +79,11 @@ class StandardReasoner(BaseReasoner):
                 available_tools = self.jentic_client.search(plan, top_k=5)
                 
                 # Select tool
-                logger.info(f"Available tools: {[t['id'] for t in available_tools]}")
                 selected_tool = self.select_tool(plan, available_tools)
-                logger.info(f"Selected tool: {selected_tool['id'] if selected_tool else None}")
+                if selected_tool:
+                    logger.info(f"Tool selected: {selected_tool['id']}")
+                else:
+                    logger.info("No tool selected for this step.")
                 
                 if selected_tool is None:
                     # No tool needed, try to generate answer
@@ -117,7 +119,7 @@ class StandardReasoner(BaseReasoner):
                 observation = self.observe(execution_result)
                 observations.append(observation)
                 
-                logger.info(f"Observation: {observation}")
+                logger.info("Step executed and observed.")
                 
             except Exception as e:
                 error_msg = f"Error in iteration {iteration + 1}: {str(e)}"
@@ -127,7 +129,7 @@ class StandardReasoner(BaseReasoner):
                 # Reflect on failure
                 if failed_attempts:
                     reflection = self.reflect(goal, observations, failed_attempts)
-                    logger.info(f"Reflection: {reflection}")
+                    logger.info("Reflection attempted on failure.")
         
         # Max iterations reached
         if observations:

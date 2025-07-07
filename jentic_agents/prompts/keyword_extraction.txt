@@ -1,20 +1,32 @@
-You are an expert at rephrasing a technical developer task into a clear,
-capability-focused search query for a tool marketplace. Your goal is to
-generate a query that accurately describes the desired functionality.
-
-**Example 1:**
-Task: "Search jentic for a 'nytimes' api to search for articles"
-Search Query: "New York Times API for searching articles"
-
-**Example 2:**
-Task: "Search jentic for a 'Discord' api to post a message"
-Search Query: "Discord API for posting messages"
-
-**Example 3:**
-Task: "Find a tool to create a new lead in Salesforce"
-Search Query: "Salesforce API for lead creation"
-
-**Real Task:**
-Task: "{context_text}"
-
-Search Query:
+{
+  "instruction": "Rephrase a technical developer task into a clear, capability-focused search query for a tool marketplace.",
+  "inputs": {
+    "context_text": "{context_text}"
+  },
+  "rules": [
+    "Generate a concise search query using 5-7 capability-focused keywords that describe the required functionality for this step.",
+    "Include EXACTLY ONE provider keyword (e.g., 'github', 'discord', 'trello') based on the platform mentioned in the context, or omit provider entirely if platform is unclear.",
+    "Never combine multiple platforms or APIs in a single query - focus on one provider at a time.",
+    "Do not include tool names unless explicitly specified in the task.",
+    "Do not include extra explanation or formatting, just the search query string.",
+    "Base your keywords strictly on the current step, not the overall goal or future steps.",
+    "Focus on action-oriented keywords that describe what needs to be done (create, update, fetch, send, etc.)."
+  ],
+  "examples": [
+    {
+      "output": "nytimes article search metadata info"
+    },
+    {
+      "output": "salesforce lead creation crm contact"
+    },
+    {
+      "output": "asana task project management create update"
+    },
+    {
+      "output": "slack send message channel post api"
+    },
+    {
+      "output": "trello board list cards fetch"
+    }
+  ]
+}

@@ -1,25 +1,112 @@
-You are about to call the tool **{tool_id}**.
-{tool_schema}
-{memory_enum}
+{
+  "instruction": "Generate appropriate input parameters for the selected API operation based on the user goal, agent memory, and available operation schema.",
 
-Current goal: {goal}
-Current step: {step}
+  "context": "Use the operation schema to understand required and optional parameters. Extract values from the user goal, memory, and context. Handle URL parsing when applicable.",
 
-CRITICAL INSTRUCTIONS:
-1. If you have all the information needed to fill the required parameters with REAL values, provide a JSON object with those parameters.
-2. If you are missing critical information (like channel IDs, user IDs, specific targets, etc.) that you cannot reasonably infer from the goal or available memory, respond with:
-   NEED_HUMAN_INPUT: [list the specific parameters you need help with]
+  "inputs": {
+    "goal": "{goal}",
+    "memory": "{memory}",
+    "selected_operation": "{selected_operation}",
+    "schema": "{schema}"
+  },
 
-IMPORTANT RULES FOR PARAMETERS:
-- Extract actual parameter values from the goal context when possible
-- For IDs extracted from URLs, parse the relevant parts (e.g., entity IDs, resource IDs, etc.)
-- **SMART MEMORY EXTRACTION**: When memory contains structured data (arrays, objects), extract specific values you need
-- Only use ${{memory.<key>}} placeholders for values that are explicitly listed above in available memory AND cannot be extracted
-- DO NOT guess or make up IDs, tokens, or other critical identifiers
-- DO NOT use placeholder text like "provide_channel_id" or "enter your token here"
+  "rules": [
+    "Output ONLY a valid JSON object with parameter names and values.",
+    "Use the schema to determine which parameters are required and their types.",
+    "Extract parameter values from the goal, memory, or context when possible.",
+    "MEMORY REFERENCES: Use ${memory.key} for simple values or ${memory.key.field} for nested data from previous steps.",
+    "URL PARSING: Extract IDs from URLs using these patterns: /board/ID, /repo/ID, /project/ID, /channel/ID - take the alphanumeric identifier after the resource type if structured this way.",
+    "NEVER generate placeholder values like 'your_api_key', 'user_token', 'example_id', or similar fake data.",
+    "For missing parameters that can't be extracted, leave them out entirely rather than using placeholders.",
+    "Include authentication parameters (key, token, etc.) if they appear in the schema as required - they will be automatically populated by Jentic during execution.",
+    "Use appropriate data types: strings for text/IDs, numbers for counts/limits, booleans for flags.",
+    "Keep parameter values concise and relevant to the goal.",
+    "PRIORITY ORDER: 1) Extract from goal text, 2) Parse from URLs, 3) Use memory references, 4) Omit if unavailable.",
+    "For list/array parameters, extract multiple values when the goal mentions multiple items."
+  ],
 
-RESPONSE FORMAT:
-- If you have all needed info: Return ONLY the raw JSON object without any ```json or ``` markers
-- If you need human input: Return "NEED_HUMAN_INPUT: parameter1, parameter2, ..." 
+  "placeholder_prevention": {
+    "never_generate": [
+      "your_api_key", "api_key_here", "your_token", "user_token", 
+      "example_id", "sample_id", "placeholder_id", "test_id",
+      "your_username", "user_email", "example@email.com",
+      "board_id_here", "list_id_placeholder", "channel_id_example"
+    ],
+    "instead_do": [
+      "Extract actual IDs from URLs in the goal",
+      "Use ${memory.key} references for stored values", 
+      "Parse specific values mentioned in the goal text",
+      "Omit the parameter entirely if no real value is available"
+    ],
+    "common_mistakes": {
+      "wrong": "{'board_id': 'your_board_id_here'}",
+      "right": "{'board_id': '${memory.target_board_id}'} or extract from URL"
+    }
+  },
 
-Note: Authentication credentials will be automatically injected by the platform.
+  "examples": [
+    {
+      "goal": "Send message 'Hello team' to channel general",
+      "memory": "{'channels': [{'id': 'C123', 'name': 'general'}, {'id': 'C456', 'name': 'random'}]}",
+      "schema": "{'channel': 'string (required)', 'text': 'string (required)'}",
+      "output": {
+        "channel": "C123",
+        "text": "Hello team"
+      }
+    },
+    {
+      "goal": "Add task 'Review code' to project board https://example.com/board/ABC123",
+      "memory": "{'board_lists': [{'id': 'L1', 'name': 'Todo'}, {'id': 'L2', 'name': 'Done'}]}",
+      "schema": "{'list_id': 'string (required)', 'name': 'string (required)', 'description': 'string (optional)'}",
+      "output": {
+        "list_id": "${memory.target_list_id}",
+        "name": "Review code"
+      }
+    },
+    {
+      "goal": "Get board details from https://example.com/board/XYZ789",
+      "memory": "{}",
+      "schema": "{'board_id': 'string (required)'}",
+      "output": {
+        "board_id": "XYZ789"
+      }
+    },
+    {
+      "goal": "Create repository in my organization",
+      "memory": "{'org_data': {'id': 'org_456', 'login': 'mycompany'}}",
+      "schema": "{'owner': 'string (required)', 'name': 'string (required)', 'private': 'boolean (optional)'}",
+      "output": {
+        "owner": "${memory.org_data.login}",
+        "name": "new-repo"
+      }
+    },
+    {
+      "goal": "Add card to Todo list from board https://trello.com/b/ABC123/myboard",
+      "memory": "{'target_list_id': 'list_789'}",
+      "schema": "{'idList': 'string (required)', 'name': 'string (required)', 'desc': 'string (optional)'}",
+      "output": {
+        "idList": "${memory.target_list_id}",
+        "name": "New task"
+      }
+    },
+    {
+      "goal": "Update user profile with email john@example.com",
+      "memory": "{'current_profile': {'id': 'user_123', 'name': 'John Doe', 'email': 'old@example.com'}}",
+      "schema": "{'user_id': 'string (required)', 'email': 'string (optional)', 'name': 'string (optional)'}",
+      "output": {
+        "user_id": "${memory.current_profile.id}",
+        "email": "john@example.com"
+      }
+    },
+    {
+      "goal": "Get board lists from https://trello.com/b/ABC123/project",
+      "memory": "{}",
+      "schema": "{'idBoard': 'string (required)', 'key': 'string (required)', 'token': 'string (required)'}",
+      "output": {
+        "idBoard": "ABC123",
+        "key": "",
+        "token": ""
+      }
+    }
+  ]
+}

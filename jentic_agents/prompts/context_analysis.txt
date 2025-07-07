@@ -1,0 +1,146 @@
+{
+  "instruction": "Analyze the user goal and current workflow context to extract key information that will guide intelligent tool selection. Focus on understanding the intended action, target API domain, and workflow state.",
+
+  "inputs": {
+    "goal": "{goal}",
+    "current_step": "{current_step}",
+    "previous_steps": "{previous_steps}",
+    "memory_summary": "{memory_summary}"
+  },
+
+  "rules": [
+    "Output a valid JSON object with the analysis results.",
+    "Identify the primary action type (create, read, update, delete, search, send, get, etc.).",
+    "Determine the target API domain using domain recognition patterns and entity analysis.",
+    "Assess workflow complexity: single-step (direct action) vs multi-step (requires data lookup).",
+    "Extract key entities and parameters mentioned in the goal (board names, repo names, channel names, etc.).",
+    "Identify available data sources (URLs, memory keys, explicit values in goal).",
+    "Assess parameter compatibility requirements for potential tools.",
+    "Determine confidence level for API domain identification (high, medium, low)."
+  ],
+
+  "domain_recognition_patterns": {
+    "url_patterns": {
+      "trello": ["trello.com", "/b/", "/c/"],
+      "github": ["github.com", "/repos/", "/issues/", "/pull/"],
+      "discord": ["discord.com", "/channels/", "/guilds/"],
+      "slack": ["slack.com", "/archives/", "/messages/"],
+      "notion": ["notion.so", "/page/"],
+      "asana": ["asana.com", "/projects/", "/tasks/"]
+    },
+    "entity_keywords": {
+      "trello": ["board", "card", "list", "checklist", "trello"],
+      "github": ["repository", "repo", "issue", "pull request", "commit", "branch", "github"],
+      "discord": ["server", "channel", "message", "guild", "discord"],
+      "slack": ["workspace", "channel", "message", "thread", "slack"],
+      "notion": ["page", "database", "block", "notion"],
+      "asana": ["project", "task", "team", "asana"]
+    },
+    "action_patterns": {
+      "messaging": ["discord", "slack"],
+      "project_management": ["trello", "asana", "notion"],
+      "code_collaboration": ["github"],
+      "documentation": ["notion", "github"]
+    }
+  },
+
+  "generic_matching_patterns": {
+    "when_to_use_generic": [
+      "Multiple API domains could apply to the action",
+      "No clear domain indicators in goal or context",
+      "Action type is common across many platforms",
+      "User explicitly mentions multiple platforms"
+    ],
+    "confidence_factors": {
+      "high_confidence": "Explicit URL or platform mention + matching entity keywords",
+      "medium_confidence": "Strong entity keywords or action patterns match",
+      "low_confidence": "Weak indicators or multiple possible domains"
+    }
+  },
+
+  "output_schema": {
+    "action_type": "string (primary action: create, read, update, delete, search, send, get, etc.)",
+    "api_domain": "string (target API: trello, github, discord, slack, generic, unknown)",
+    "domain_confidence": "string (high, medium, low)",
+    "workflow_complexity": "string (single-step, multi-step)",
+    "key_entities": "array of strings (board names, repo names, etc.)",
+    "available_data": "object (urls, memory_keys, explicit_values)",
+    "parameter_requirements": "array of strings (types of parameters likely needed)",
+    "context_factors": "object (additional context that may influence tool selection)"
+  },
+
+  "examples": [
+    {
+      "goal": "Create a card in the Todo list on my project board https://trello.com/b/ABC123/project",
+      "current_step": "Search for operation that adds cards to lists",
+      "previous_steps": "[]",
+      "memory_summary": "empty",
+      "output": {
+        "action_type": "create",
+        "api_domain": "trello",
+        "domain_confidence": "high",
+        "workflow_complexity": "multi-step",
+        "key_entities": ["Todo list", "project board"],
+        "available_data": {
+          "urls": ["https://trello.com/b/ABC123/project"],
+          "memory_keys": [],
+          "explicit_values": ["card title", "Todo list"]
+        },
+        "parameter_requirements": ["board_id", "list_id", "card_name"],
+        "context_factors": {
+          "requires_list_lookup": true,
+          "board_id_extractable": true,
+          "authentication_needed": true
+        }
+      }
+    },
+    {
+      "goal": "Send message 'Hello team' to general channel",
+      "current_step": "Search for operation that sends messages to channels",
+      "previous_steps": "[]",
+      "memory_summary": "channels: [{'id': 'C123', 'name': 'general'}]",
+      "output": {
+        "action_type": "send",
+        "api_domain": "discord",
+        "domain_confidence": "medium",
+        "workflow_complexity": "single-step",
+        "key_entities": ["general channel"],
+        "available_data": {
+          "urls": [],
+          "memory_keys": ["channels"],
+          "explicit_values": ["Hello team", "general"]
+        },
+        "parameter_requirements": ["channel_id", "message_content"],
+        "context_factors": {
+          "channel_id_available": true,
+          "direct_action_possible": true,
+          "no_lookup_required": true
+        }
+      }
+    },
+    {
+      "goal": "Get user profile information",
+      "current_step": "Search for operation that retrieves user profiles",
+      "previous_steps": "[]",
+      "memory_summary": "empty",
+      "output": {
+        "action_type": "get",
+        "api_domain": "generic",
+        "domain_confidence": "low",
+        "workflow_complexity": "single-step",
+        "key_entities": ["user profile"],
+        "available_data": {
+          "urls": [],
+          "memory_keys": [],
+          "explicit_values": []
+        },
+        "parameter_requirements": ["user_id"],
+        "context_factors": {
+          "api_ambiguous": true,
+          "may_need_authentication": true,
+          "simple_read_operation": true
+        }
+      }
+    }
+  ]
+} 
