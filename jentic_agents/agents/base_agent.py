@@ -6,7 +6,7 @@ from typing import Any
 
 from ..reasoners.base_reasoner import BaseReasoner, ReasoningResult
 from ..memory.base_memory import BaseMemory
-from ..inbox.base_inbox import BaseInbox
+from ..communication.inbox.base_inbox import BaseInbox
 from ..platform.jentic_client import JenticClient
 
 

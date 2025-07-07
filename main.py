@@ -39,10 +39,15 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from jentic_agents.agents.interactive_cli_agent import InteractiveCLIAgent
 from jentic_agents.agents.simple_ui_agent import SimpleUIAgent
-from jentic_agents.inbox.cli_inbox import CLIInbox
 from jentic_agents.memory.scratch_pad import ScratchPadMemory
+from jentic_agents.communication.inbox.cli_inbox import CLIInbox
+from jentic_agents.communication.hitl.cli_intervention_hub import CLIInterventionHub
+from jentic_agents.memory.agent_memory import create_agent_memory
 from jentic_agents.platform.jentic_client import JenticClient
 from jentic_agents.reasoners.bullet_list_reasoner import BulletPlanReasoner
+from jentic_agents.reasoners.freeform_reasoner import FreeformReasoner
+from jentic_agents.reasoners.standard_reasoner import StandardReasoner
+
 from jentic_agents.utils.llm import LiteLLMChatLLM
 
 logging.getLogger("litellm").setLevel(logging.WARNING)
@@ -107,10 +112,14 @@ def main():
         llm_wrapper = LiteLLMChatLLM(model=model_name)
         memory = ScratchPadMemory()
 
+        # Initialize the CLI intervention hub for human-in-the-loop
+        escalation_hub = CLIInterventionHub()
+
         reasoner = BulletPlanReasoner(
             jentic=jentic_client,
             memory=memory,
             llm=llm_wrapper,
+            intervention_hub=escalation_hub,
         )
 
         # 3. Initialize Inbox and Agent based on mode
