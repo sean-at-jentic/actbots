@@ -329,6 +329,8 @@ class BulletPlanReasoner(BaseReasoner):
                 )
                 logger.info(f"LLM selected tool #{idx+1}: {tool_id} ({step.tool_name})")
                 return tool_id
+            else:
+                logger.warning(f"LLM selected tool #{idx+1} but only {len(hits)} tools available. Using first tool as fallback.")
 
         # 2️⃣ ID or name substring
         lower_reply = raw_reply.lower()
@@ -525,8 +527,7 @@ class BulletPlanReasoner(BaseReasoner):
         """
         Selects a tool for a given plan step using JENTIC search and LLM selection.
         """
-        logger.info("=== TOOL SELECTION PHASE ===")
-        logger.info(f"Selecting tool for step: {plan_step.text}")
+        logger.info(f"TOOL SELECTION: {plan_step.text[:50]}...")
 
         # ---- Fast path: "Execute <memory_key> ..." → reuse stored tool_id ----
         exec_match = re.match(
@@ -592,25 +593,66 @@ class BulletPlanReasoner(BaseReasoner):
             not is_simple_task(h)         # Simple tasks before complex
         ))
 
-        # Log prioritized tool candidates for debugging
-        logger.info(f"Prioritized tool candidates (top 5):")
-        for i, hit in enumerate(search_hits[:5]):
-            hit_type = hit.get("type", "unknown") if isinstance(hit, dict) else getattr(hit, "type", "unknown")
-            name = hit.get("name", "Unknown") if isinstance(hit, dict) else getattr(hit, "name", "Unknown") 
-            api_name = hit.get("api_name", "") if isinstance(hit, dict) else getattr(hit, "api_name", "")
-            description = hit.get("description", "") if isinstance(hit, dict) else getattr(hit, "description", "")
-            logger.info(f"  {i+1}. [{hit_type}] {name} ({api_name}) - {description[:60]}...")
+        # Log top tool candidates for LLM selection (reduced verbosity)
+        logger.info(f"Top candidates ({len(search_hits)} total): " + 
+                   ", ".join([f"{i+1}. {hit.get('type', 'unknown')}:{hit.get('name', 'Unknown')[:20]}" 
+                            for i, hit in enumerate(search_hits[:8])]))
 
-        # Delegate to optimized LLM selection method
-        return self._select_tool_with_llm(plan_step, search_hits, state)
+        # Try LLM selection first with initial results
+        try:
+            selected_tool_id = self._select_tool_with_llm(plan_step, search_hits, state)
+            if selected_tool_id:
+                return selected_tool_id
+        except Exception as e:
+            logger.warning(f"LLM tool selection failed: {e}")
+
+        # If initial search didn't yield good results, get more results with same query
+        if len(search_hits) < 8 or not any(self._is_relevant_tool(hit, plan_step) for hit in search_hits[:8]):
+            logger.info("Initial search didn't find enough relevant results, getting more results with same query...")
+            
+            # Search for more results with the same query (total of 16)
+            extended_hits = self.jentic.search(search_query, top_k=16)
+            if extended_hits and len(extended_hits) > len(search_hits):
+                # Sort all extended results with same criteria
+                search_hits = sorted(extended_hits, key=lambda h: (
+                    not provider_mentioned(h),
+                    not is_operation(h),
+                    not is_simple_task(h)
+                ))
+                
+                logger.info(f"Extended search results ({len(search_hits)} tools):")
+                for i, hit in enumerate(search_hits[:5]):
+                    hit_type = hit.get("type", "unknown") if isinstance(hit, dict) else getattr(hit, "type", "unknown")
+                    name = hit.get("name", "Unknown") if isinstance(hit, dict) else getattr(hit, "name", "Unknown") 
+                    logger.info(f"  {i+1}. [{hit_type}] {name}")
+                
+                return self._select_tool_with_llm(plan_step, search_hits, state)
+
+        # Final fallback to first hit
+        logger.warning("Using first available tool as final fallback")
+        return search_hits[0]["id"] if search_hits else None
+
+    def _is_relevant_tool(self, tool, step):
+        """Check if a tool is relevant to the step based on keywords and context"""
+        step_lower = step.text.lower()
+        tool_desc = (tool.get("description", "") if isinstance(tool, dict) 
+                    else getattr(tool, "description", "")).lower()
+        tool_name = (tool.get("name", "") if isinstance(tool, dict) 
+                    else getattr(tool, "name", "")).lower()
+        
+        # Extract key action words from step
+        action_words = ["send", "get", "create", "update", "delete", "fetch", "post", "retrieve"]
+        step_actions = [word for word in action_words if word in step_lower]
+        
+        # Check if any action words appear in tool description/name
+        return any(action in tool_desc or action in tool_name for action in step_actions)
 
     # 3. ACT ------------------------------------------------------------
     def act(self, tool_id: str, state: ReasonerState, current_step: Step):
         """
         Generate parameters for and execute a Jentic tool.
         """
-        logger.info("=== ACTION PHASE ===")
-        logger.info(f"Executing action with tool_id: {tool_id}")
+        logger.info(f"EXECUTING: {tool_id} ({current_step.tool_name or 'unnamed'})")
 
         # If the tool_id is a memory key (e.g., 'send_op'), resolve it to the actual tool_id
         if tool_id in self.memory.keys():
@@ -730,15 +772,13 @@ class BulletPlanReasoner(BaseReasoner):
 
     # 4. OBSERVE --------------------------------------------------------
     def observe(self, observation: Any, state: ReasonerState):
-        logger.info("=== OBSERVATION PHASE ===")
-        logger.info(f"Processing observation: {observation}")
+        logger.info(f"OBSERVING: {type(observation).__name__}")
 
         if not state.plan:
             logger.error("No current step to observe - plan is empty!")
             return state
 
         current_step = state.plan[0]
-        logger.info(f"Updating step: {current_step.text}")
 
         # Unpack tool results to store only the meaningful, serializable output.
         value_to_store = observation
