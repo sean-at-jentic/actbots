@@ -232,53 +232,44 @@ class ScratchPadMemory(BaseMemory):
         Returns:
             String representation of the looked up value
         """
-        # Normalize path: convert `[index]` to `.index` for consistent splitting
-        normalized_path = re.sub(r'\\[(\\d+)\\]', r'.\\1', dotted_path)
-        parts = normalized_path.split('.')
+        # Use a regex to split the path into keys and indices
+        path_parts = re.split(r'\.|\[|\]', dotted_path)
+        path_parts = [p for p in path_parts if p]  # Remove empty strings
 
-        key, *path_parts = parts
+        key, *path_parts = path_parts
 
+        # Get the top-level item from memory
         if key in self._store:
             item = self._store[key].value
         elif key in self._storage:
             item = self._storage[key]
         else:
-            raise KeyError(f"Memory key '{key}' not found")
+            raise KeyError(f"Memory key '{key}' not found for path '{dotted_path}'")
 
-        # Navigate the rest of the path
+        # Traverse the remaining path
+        current = item
         for part in path_parts:
-            if isinstance(item, dict):
-                # Try to access as a standard key first
-                if part in item:
-                    item = item[part]
-                else:
-                    # If that fails, it might be a numeric index for a list stored as a dict key
-                    try:
-                        index = int(part)
-                        if index in item:
-                            item = item[index]
-                        else:
-                            raise KeyError
-                    except (ValueError, KeyError):
-                         raise KeyError(f"Key or index '{part}' not found in dict for path '{dotted_path}'")
-            elif isinstance(item, (list, tuple)):
+            if isinstance(current, dict):
+                current = current.get(part)
+            elif isinstance(current, list):
                 try:
-                    # Part must be a number for list index
                     index = int(part)
-                    item = item[index]
-                except (ValueError, IndexError):
-                    raise KeyError(
-                        f"Invalid index '{part}' for list in path '{dotted_path}'"
-                    )
+                    if 0 <= index < len(current):
+                        current = current[index]
+                    else:
+                        current = None  # Index out of bounds
+                except (ValueError, TypeError):
+                    current = None  # Part is not a valid index
             else:
-                raise KeyError(
-                    f"Cannot navigate path '{dotted_path}' - part '{part}' not accessible in object of type {type(item)}"
-                )
+                current = None  # Cannot traverse further
 
-        # Safely stringify the final item
-        if isinstance(item, str):
-            return item
+            if current is None:
+                raise KeyError(f"Path '{dotted_path}' could not be resolved at part '{part}'")
+
+        # Safely stringify the final result
+        if isinstance(current, str):
+            return current
         try:
-            return json.dumps(item)
+            return json.dumps(current)
         except (TypeError, ValueError):
-            return str(item)
+            return str(current)
