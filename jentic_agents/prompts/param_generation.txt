@@ -7,9 +7,9 @@
     "goal": "{goal}",
     "memory": "{memory}",
     "selected_operation": "{selected_operation}",
-    "schema": "{schema}"
+    "schema": "{schema}",
+    "allowed_memory_keys": ["{allowed_memory_keys}"]
   },
-
   "rules": [
     "Output ONLY a valid JSON object with parameter names and values.",
     "Use the schema to determine which parameters are required and their types.",
@@ -22,9 +22,10 @@
     "Use appropriate data types: strings for text/IDs, numbers for counts/limits, booleans for flags.",
     "Keep parameter values concise and relevant to the goal.",
     "PRIORITY ORDER: 1) Extract from goal text, 2) Parse from URLs, 3) Use memory references, 4) Omit if unavailable.",
-    "For list/array parameters, extract multiple values when the goal mentions multiple items."
-  ],
-
+    "For list/array parameters, extract multiple values when the goal mentions multiple items.",
+    "You MUST only use memory keys from the allowed_memory_keys list when filling parameters. Do NOT reference any other memory keys, even if they are mentioned in the goal or plan.",
+    "If a required value is not available in memory - Do NOT invent or guess memory keys under any circumstance, try use the available memory keys without modifying them - if not possible as a last resort use \"\" (empty string)."
+],
   "placeholder_prevention": {
     "never_generate": [
       "your_api_key", "api_key_here", "your_token", "user_token", 
@@ -39,11 +40,10 @@
       "Omit the parameter entirely if no real value is available"
     ],
     "common_mistakes": {
-      "wrong": "{'board_id': 'your_board_id_here'}",
-      "right": "{'board_id': '${memory.target_board_id}'} or extract from URL"
+      "wrong": "{\"board_id\": \"your_board_id_here\"}",
+      "right": "{\"board_id\": \"${memory.target_board_id}\"} or extract from URL"
     }
   },
-
   "examples": [
     {
       "goal": "Send message 'Hello team' to channel general",
@@ -90,22 +90,17 @@
       }
     },
     {
-      "goal": "Update user profile with email john@example.com",
-      "memory": "{'current_profile': {'id': 'user_123', 'name': 'John Doe', 'email': 'old@example.com'}}",
-      "schema": "{'user_id': 'string (required)', 'email': 'string (optional)', 'name': 'string (optional)'}",
+      "goal": "Create a card with a title from memory, but the title is missing",
+      "memory": {
+        "other_key": "value"
+      },
+      "schema": {
+        "name": "string (required)",
+        "desc": "string (optional)"
+      },
+      "allowed_memory_keys": ["other_key"],
       "output": {
-        "user_id": "${memory.current_profile.id}",
-        "email": "john@example.com"
-      }
-    },
-    {
-      "goal": "Get board lists from https://trello.com/b/ABC123/project",
-      "memory": "{}",
-      "schema": "{'idBoard': 'string (required)', 'key': 'string (required)', 'token': 'string (required)'}",
-      "output": {
-        "idBoard": "ABC123",
-        "key": "",
-        "token": ""
+        "name": ""
       }
     }
   ]

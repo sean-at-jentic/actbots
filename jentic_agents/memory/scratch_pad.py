@@ -166,19 +166,43 @@ class ScratchPadMemory(BaseMemory):
         """
         Generate a formatted string listing all memory items for LLM prompts.
 
-        Returns:
-            Formatted string describing all stored memory items
+        Each line now includes a short (<=200-character) JSON/text preview of the
+        stored value so the model can actually use the data, not just the key.
         """
         if not self._store:
             return "(memory empty)"
         lines = ["Available memory:"]
         for item in self._store.values():
-            lines.append(item.as_prompt_line())
+            # Build a compact preview of the value
+            val = item.value
+            try:
+                preview = json.dumps(val, ensure_ascii=False)
+            except (TypeError, ValueError):
+                preview = str(val)
+            if len(preview) > 200:
+                preview = preview[:200] + "…"
+            part_type = f" ({item.type})" if item.type else ""
+            lines.append(f"• {item.key}{part_type} – {preview}  // {item.description}")
         return "\n".join(lines)
+
+    def can_resolve(self, dotted_path: str) -> bool:
+        """
+        Check if a dotted path can be resolved without raising an error.
+        Args:
+            dotted_path: Path like "key.subkey.index"
+        Returns:
+            True if the path can be resolved, False otherwise.
+        """
+        try:
+            # We don't need the result, just to see if _lookup raises an exception.
+            self._lookup(dotted_path)
+            return True
+        except (KeyError, IndexError):
+            return False
 
     # ---------- Placeholder resolution ----------
 
-    _MEMORY_RE = re.compile(r"\$\{(?:\{)?memory\.([\w_\.]+)(?:\})?\}")
+    _MEMORY_RE = re.compile(r"\\$\\{(?:\\{)?memory\\.([\\w\\._\\[\\]]+)(?:\\})?\\}")
 
     def resolve_placeholders(self, obj: Any) -> Any:
         """
@@ -202,17 +226,18 @@ class ScratchPadMemory(BaseMemory):
 
     def _lookup(self, dotted_path: str) -> str:
         """
-        Look up a value using dotted path notation.
-
+        Look up a value using a path that can include dots and array indices.
         Args:
-            dotted_path: Path like "key.subkey.index"
-
+            dotted_path: Path like "key.subkey[0].field"
         Returns:
             String representation of the looked up value
         """
-        key, *path = dotted_path.split(".")
+        # Normalize path: convert `[index]` to `.index` for consistent splitting
+        normalized_path = re.sub(r'\\[(\\d+)\\]', r'.\\1', dotted_path)
+        parts = normalized_path.split('.')
 
-        # Try enhanced storage first, then fall back to simple storage
+        key, *path_parts = parts
+
         if key in self._store:
             item = self._store[key].value
         elif key in self._storage:
@@ -220,24 +245,40 @@ class ScratchPadMemory(BaseMemory):
         else:
             raise KeyError(f"Memory key '{key}' not found")
 
-        # Navigate the dotted path
-        for part in path:
+        # Navigate the rest of the path
+        for part in path_parts:
             if isinstance(item, dict):
-                item = item[part]
+                # Try to access as a standard key first
+                if part in item:
+                    item = item[part]
+                else:
+                    # If that fails, it might be a numeric index for a list stored as a dict key
+                    try:
+                        index = int(part)
+                        if index in item:
+                            item = item[index]
+                        else:
+                            raise KeyError
+                    except (ValueError, KeyError):
+                         raise KeyError(f"Key or index '{part}' not found in dict for path '{dotted_path}'")
             elif isinstance(item, (list, tuple)):
-                item = item[int(part)]
+                try:
+                    # Part must be a number for list index
+                    index = int(part)
+                    item = item[index]
+                except (ValueError, IndexError):
+                    raise KeyError(
+                        f"Invalid index '{part}' for list in path '{dotted_path}'"
+                    )
             else:
                 raise KeyError(
-                    f"Cannot navigate path '{dotted_path}' - {part} not accessible"
+                    f"Cannot navigate path '{dotted_path}' - part '{part}' not accessible in object of type {type(item)}"
                 )
 
-        # Safely stringify the item
+        # Safely stringify the final item
         if isinstance(item, str):
             return item
-
-        # Try JSON serialization first
         try:
             return json.dumps(item)
         except (TypeError, ValueError):
-            # If JSON serialization fails, fall back to string representation
             return str(item)

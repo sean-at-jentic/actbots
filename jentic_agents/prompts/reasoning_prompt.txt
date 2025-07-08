@@ -7,11 +7,19 @@
   "rules": [
     "Return ONLY the direct result that should be stored or used for the next steps.",
     "If the result is structured, reply with valid JSON.",
+    "CRITICAL: If a step involves extracting multiple pieces of information (e.g., 'ID and name', 'title and URL'), your output MUST be a single JSON object with a key for each piece of information.",
     "Do not include any explanation or extra text."
   ],
-  "example": {
-    "step": "Summarize the main points from the meeting notes.",
-    "memory": "{\"meeting_notes\": \"Discussed project timeline and deliverables. Decided on next steps.\"}",
-    "output": "{\"summary\": \"Project timeline and deliverables discussed. Next steps decided.\"}"
-  }
+  "examples": [
+    {
+      "step": "Summarize the main points from the meeting notes.",
+      "memory": "{\"meeting_notes\": \"Discussed project timeline and deliverables. Decided on next steps.\"}",
+      "output": "{\"summary\": \"Project timeline and deliverables discussed. Next steps decided.\"}"
+    },
+    {
+      "step": "From the provided article data, extract the title and url.",
+      "memory": "{\"article_data\": {\"headline\": {\"main\": \"AI Takes Over\"}, \"web_url\": \"https://www.nytimes.com/some-article\"}}",
+      "output": "{\"title\": \"AI Takes Over\", \"url\": \"https://www.nytimes.com/some-article\"}"
+    }
+  ]
 }

@@ -19,10 +19,10 @@
     "If required data is missing or needs to be resolved from names/URLs, add a step to search for or retrieve it first.",
     "Never mention login/auth steps or specific tool IDs; describe the action generically.",
     "Be explicit about the target object and purpose in each step.",
-    "Always append the full goal in parentheses at the end of each step (in the 'text' field).",
     "Use multiple APIs if necessary to reach the goal, but avoid redundant operations.",
     "For operations that need specific IDs from URLs or names, create dedicated lookup/extraction steps before the main action.",
     "Store intermediate results with descriptive keys for use in subsequent steps (e.g., 'target_list_id', 'board_data', 'user_info').",
+    "Never reference a memory key unless it has been populated by a previous step in the plan",
     "IMPORTANT: Wrap your entire JSON array output in a markdown code block with triple backticks and json, like this: ``` ... ```"
   ],
 
@@ -72,58 +72,58 @@
     {
       "goal": "Send a message to a specific channel",
       "output": [
-        {"step_type": "SEARCH", "text": "Search for an operation that sends messages to channels (goal: Send a message to a specific channel)", "store_key": "send_op"},
-        {"step_type": "EXECUTE", "text": "Execute send_op with the target channel and message content (goal: Send a message to a specific channel)"}
+        {"step_type": "SEARCH", "text": "Search for an operation that sends messages to channels", "store_key": "send_op"},
+        {"step_type": "EXECUTE", "text": "Execute send_op with the target channel and message content"}
       ]
     },
     {
       "goal": "Post a message in a channel by name",
       "output": [
-        {"step_type": "SEARCH", "text": "Search for an operation that lists channels in the workspace (goal: Post a message in a channel by name)", "store_key": "list_channels_op"},
-        {"step_type": "EXECUTE", "text": "Execute list_channels_op to get all channels (goal: Post a message in a channel by name)", "store_key": "channels"},
-        {"step_type": "REASON", "text": "From channels data, find the channel_id for the target channel name (goal: Post a message in a channel by name)", "store_key": "target_channel"},
-        {"step_type": "SEARCH", "text": "Search for an operation that sends a message to a channel (goal: Post a message in a channel by name)", "store_key": "send_op"},
-        {"step_type": "EXECUTE", "text": "Execute send_op with channel_id from target_channel and message content (goal: Post a message in a channel by name)"}
+        {"step_type": "SEARCH", "text": "Search for an operation that lists channels in the workspace", "store_key": "list_channels_op"},
+        {"step_type": "EXECUTE", "text": "Execute list_channels_op to get all channels", "store_key": "channels"},
+        {"step_type": "REASON", "text": "From channels data, find the channel_id for the target channel name", "store_key": "target_channel"},
+        {"step_type": "SEARCH", "text": "Search for an operation that sends a message to a channel", "store_key": "send_op"},
+        {"step_type": "EXECUTE", "text": "Execute send_op with channel_id from target_channel and message content"}
       ]
     },
     {
       "goal": "Add an item to a list using a board URL",
       "output": [
-        {"step_type": "SEARCH", "text": "Search for an operation that gets board details or lists (goal: Add an item to a list using a board URL)", "store_key": "get_board_op"},
-        {"step_type": "EXECUTE", "text": "Execute get_board_op with board_id extracted from URL to get board lists (goal: Add an item to a list using a board URL)", "store_key": "board_lists"},
-        {"step_type": "REASON", "text": "From board_lists, find the list_id for the target list (goal: Add an item to a list using a board URL)", "store_key": "target_list_id"},
-        {"step_type": "SEARCH", "text": "Search for an operation that adds an item to a list (goal: Add an item to a list using a board URL)", "store_key": "add_item_op"},
-        {"step_type": "EXECUTE", "text": "Execute add_item_op with list_id from target_list_id and item details (goal: Add an item to a list using a board URL)"}
+        {"step_type": "SEARCH", "text": "Search for an operation that gets board details or lists", "store_key": "get_board_op"},
+        {"step_type": "EXECUTE", "text": "Execute get_board_op with board_id extracted from URL to get board lists", "store_key": "board_lists"},
+        {"step_type": "REASON", "text": "From board_lists, find the list_id for the target list", "store_key": "target_list_id"},
+        {"step_type": "SEARCH", "text": "Search for an operation that adds an item to a list", "store_key": "add_item_op"},
+        {"step_type": "EXECUTE", "text": "Execute add_item_op with list_id from target_list_id and item details"}
       ]
     },
     {
       "goal": "Create a new repository in an organization",
       "output": [
-        {"step_type": "SEARCH", "text": "Search for an operation that lists organizations or gets organization details (goal: Create a new repository in an organization)", "store_key": "get_org_op"},
-        {"step_type": "EXECUTE", "text": "Execute get_org_op to get organization information and permissions (goal: Create a new repository in an organization)", "store_key": "org_data"},
-        {"step_type": "REASON", "text": "From org_data, extract the organization_id and verify creation permissions (goal: Create a new repository in an organization)", "store_key": "validated_org_id"},
-        {"step_type": "SEARCH", "text": "Search for an operation that creates a repository (goal: Create a new repository in an organization)", "store_key": "create_repo_op"},
-        {"step_type": "EXECUTE", "text": "Execute create_repo_op with organization_id from validated_org_id and repository details (goal: Create a new repository in an organization)"}
+        {"step_type": "SEARCH", "text": "Search for an operation that lists organizations or gets organization details", "store_key": "get_org_op"},
+        {"step_type": "EXECUTE", "text": "Execute get_org_op to get organization information and permissions", "store_key": "org_data"},
+        {"step_type": "REASON", "text": "From org_data, extract the organization_id and verify creation permissions", "store_key": "validated_org_id"},
+        {"step_type": "SEARCH", "text": "Search for an operation that creates a repository", "store_key": "create_repo_op"},
+        {"step_type": "EXECUTE", "text": "Execute create_repo_op with organization_id from validated_org_id and repository details"}
       ]
     },
     {
       "goal": "Update user profile information",
       "output": [
-        {"step_type": "SEARCH", "text": "Search for an operation that gets current user profile (goal: Update user profile information)", "store_key": "get_profile_op"},
-        {"step_type": "EXECUTE", "text": "Execute get_profile_op to retrieve current profile data (goal: Update user profile information)", "store_key": "current_profile"},
-        {"step_type": "REASON", "text": "From current_profile, identify which fields need updating and preserve existing values (goal: Update user profile information)", "store_key": "profile_changes"},
-        {"step_type": "SEARCH", "text": "Search for an operation that updates user profile (goal: Update user profile information)", "store_key": "update_profile_op"},
-        {"step_type": "EXECUTE", "text": "Execute update_profile_op with changes from profile_changes merged with current data (goal: Update user profile information)"}
+        {"step_type": "SEARCH", "text": "Search for an operation that gets current user profile", "store_key": "get_profile_op"},
+        {"step_type": "EXECUTE", "text": "Execute get_profile_op to retrieve current profile data", "store_key": "current_profile"},
+        {"step_type": "REASON", "text": "From current_profile, identify which fields need updating and preserve existing values", "store_key": "profile_changes"},
+        {"step_type": "SEARCH", "text": "Search for an operation that updates user profile", "store_key": "update_profile_op"},
+        {"step_type": "EXECUTE", "text": "Execute update_profile_op with changes from profile_changes merged with current data"}
       ]
     },
     {
       "goal": "Schedule a meeting with team members",
       "output": [
-        {"step_type": "SEARCH", "text": "Search for an operation that gets team member information or contact details (goal: Schedule a meeting with team members)", "store_key": "get_team_op"},
-        {"step_type": "EXECUTE", "text": "Execute get_team_op to retrieve team member list and availability (goal: Schedule a meeting with team members)", "store_key": "team_data"},
-        {"step_type": "REASON", "text": "From team_data, extract member IDs and determine optimal meeting time (goal: Schedule a meeting with team members)", "store_key": "meeting_details"},
-        {"step_type": "SEARCH", "text": "Search for an operation that creates calendar events or meetings (goal: Schedule a meeting with team members)", "store_key": "create_meeting_op"},
-        {"step_type": "EXECUTE", "text": "Execute create_meeting_op with member IDs from meeting_details and scheduling information (goal: Schedule a meeting with team members)"}
+        {"step_type": "SEARCH", "text": "Search for an operation that gets team member information or contact details", "store_key": "get_team_op"},
+        {"step_type": "EXECUTE", "text": "Execute get_team_op to retrieve team member list and availability", "store_key": "team_data"},
+        {"step_type": "REASON", "text": "From team_data, extract member IDs and determine optimal meeting time", "store_key": "meeting_details"},
+        {"step_type": "SEARCH", "text": "Search for an operation that creates calendar events or meetings", "store_key": "create_meeting_op"},
+        {"step_type": "EXECUTE", "text": "Execute create_meeting_op with member IDs from meeting_details and scheduling information"}
       ]
     }
   ]
