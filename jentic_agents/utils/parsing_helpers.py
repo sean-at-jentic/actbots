@@ -101,24 +101,4 @@ def safe_json_loads(text: str) -> Dict[str, Any]:
         raise ValueError(f"Failed to parse JSON: {e}\n{text}")
 
 
-def resolve_placeholders(obj: Any, memory: 'ScratchPadMemory') -> Any:
-    """Delegate placeholder resolution to ScratchPadMemory."""
-    from .logger import get_logger
-    logger = get_logger(__name__)
-    
-    logger.debug(f"Resolving placeholders in: {obj}")
-    try:
-        result = memory.resolve_placeholders(obj)
-        # --- sanitize any strings that still include markdown code fences ---
-        sanitized = cleanse(result)
-        logger.debug(f"Placeholder resolution result: {sanitized}")
-        return sanitized
-    except KeyError as e:
-        logger.warning(f"Memory placeholder resolution failed: {e}")
-        logger.warning(
-            "Continuing with unresolved placeholders - this may cause tool execution to fail"
-        )
-        # Return the original object with unresolved placeholders
-        return obj
-
-__all__.extend(["extract_fenced_code", "safe_json_loads", "resolve_placeholders"])
+__all__.extend(["extract_fenced_code", "safe_json_loads"])

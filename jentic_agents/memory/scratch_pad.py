@@ -9,7 +9,10 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 from .base_memory import BaseMemory
+from ..utils.parsing_helpers import cleanse
+from ..utils.logger import get_logger
 
+logger = get_logger(__name__)
 
 @dataclass
 class MemoryItem:
@@ -34,6 +37,7 @@ class ScratchPadMemory(BaseMemory):
     Supports both simple key-value storage and enhanced memory items with
     descriptions, types, and placeholder resolution.
     """
+    _MEMORY_RE = re.compile(r"\$\{(?:\{)?memory\.([\w\._\[\]]+)(?:\})?\}")
 
     def __init__(self):
         """Initialize empty scratch pad memory."""
@@ -200,9 +204,46 @@ class ScratchPadMemory(BaseMemory):
         except (KeyError, IndexError):
             return False
 
-    # ---------- Placeholder resolution ----------
+    def validate_placeholders(self, args: Dict[str, Any], required_fields: list) -> tuple[Optional[str], Optional[str]]:
+        """
+        Validates placeholders in a dictionary of arguments.
+        Returns a tuple of (error_message, correction_prompt).
+        """
+        error_summary = []
+        is_unrecoverable = False
 
-    _MEMORY_RE = re.compile(r"\\$\\{(?:\\{)?memory\\.([\\w\\._\\[\\]]+)(?:\\})?\\}")
+        for param, value in args.items():
+            if isinstance(value, str):
+                for match in self._MEMORY_RE.finditer(value):
+                    path = match.group(1)
+                    if not self.can_resolve(path):
+                        error_summary.append(f"param '{param}' references invalid memory path '${{memory.{path}}}'")
+                        if param in required_fields:
+                            is_unrecoverable = True
+        
+        if not error_summary:
+            return None, None
+
+        full_error = f"Placeholder validation failed: {', '.join(error_summary)}."
+        if is_unrecoverable:
+            raise RuntimeError(f"A required parameter is missing from memory. {full_error}. Available keys: [{', '.join(self.keys())}].")
+
+        # Logic for generating a correction prompt
+        from ..utils.prompt_loader import load_prompt
+        logger.warning(f"Optional parameter placeholder failed. {full_error}. Attempting local correction.")
+        correction_template = load_prompt("param_correction_prompt")
+        failed_params_str = json.dumps(args, indent=2)
+        
+        if isinstance(correction_template, dict):
+            correction_template.get('context', {})['failed_parameters'] = failed_params_str
+            correction_template.get('context', {})['available_memory_keys'] = ", ".join(self.keys())
+            correction_prompt = json.dumps(correction_template, ensure_ascii=False)
+        else:
+            correction_prompt = correction_template.format(failed_params=failed_params_str, available_memory_keys=", ".join(self.keys()))
+        
+        return full_error, correction_prompt
+
+    # ---------- Placeholder resolution ----------
 
     def resolve_placeholders(self, obj: Any) -> Any:
         """
@@ -220,7 +261,7 @@ class ScratchPadMemory(BaseMemory):
             return [self.resolve_placeholders(v) for v in obj]
         if isinstance(obj, dict):
             return {k: self.resolve_placeholders(v) for k, v in obj.items()}
-        return obj
+        return cleanse(obj)
 
     # ---------- Private helpers ----------
 

@@ -45,9 +45,9 @@ from typing import Any, Dict, List, Optional
 from ..utils.parsing_helpers import (
     extract_fenced_code,
     safe_json_loads,
-    resolve_placeholders,
     strip_backtick_fences,
 )
+from ..utils.prompt_loader import load_prompt
 from .base_reasoner import BaseReasoner
 from ..platform.jentic_client import JenticClient  # local wrapper, not the raw SDK
 from ..utils.llm import BaseLLM, LiteLLMChatLLM
@@ -59,22 +59,8 @@ from ..communication.hitl.base_intervention_hub import BaseInterventionHub, NoEs
 # Initialize module logger using the shared logging utility
 logger = get_logger(__name__)
 
-# ---------------------------------------------------------------------------
-# Module-level constants
-# ---------------------------------------------------------------------------
-
-# Regex for finding memory placeholders, e.g., ${memory.key.field}
-PLACEHOLDER_RE = re.compile(r"\$\{(?:\{)?memory\.([\w_\.]+)(?:\})?\}")
-
 # Maximum number of reflection attempts before giving up on a failed step
 MAX_REFLECTION_ATTEMPTS = 3
-
-# Remove automatic retry limits - let the agent choose when to escalate
-
-# ---------------------------------------------------------------------------
-# Helper data models
-# ---------------------------------------------------------------------------
-
 
 @dataclass
 class Step:
@@ -211,32 +197,14 @@ def parse_bullet_plan(markdown: str) -> deque[Step]:
 class BulletPlanReasoner(BaseReasoner):
     """Concrete Reasoner that follows the BulletPlan strategy."""
 
-    @staticmethod
-    def _load_prompt(prompt_name: str):
-        """Load a prompt from the prompts directory. Return JSON if file is JSON, else string."""
-        current_dir = Path(__file__).parent.parent
-        prompt_path = current_dir / "prompts" / f"{prompt_name}.txt"
-        try:
-            with open(prompt_path, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-                if content.startswith("{"):
-                    try:
-                        return json.loads(content)
-                    except json.JSONDecodeError as e:
-                        logger.error(f"Failed to parse JSON from prompt file: {prompt_path}")
-                        logger.error(f"--- FAULTY PROMPT CONTENT ---\n{content}\n-----------------------------")
-                        raise e  # Re-raise the original error after logging
-                return content
-        except FileNotFoundError:
-            logger.error(f"Prompt file not found: {prompt_path}")
-            raise RuntimeError(f"Prompt file not found: {prompt_path}")
-
     def _build_search_query(self, step: "Step", state: "ReasonerState") -> str:
         """
         Turn a plan step into an API-hub search query, using the main goal for context.
         """
         try:
-            kw_template = self._load_prompt("keyword_extraction")
+            kw_template = load_prompt("keyword_extraction")
+            
+            # Combine the step text with the overall goal for better context
             contextual_text = f"Goal: {state.goal}\nStep: {step.text}"
             
             if isinstance(kw_template, dict):
@@ -299,7 +267,7 @@ class BulletPlanReasoner(BaseReasoner):
         candidate_block = "\n".join(numbered_lines)
 
         # Fill the prompt
-        prompt_tpl = self._load_prompt("select_tool")
+        prompt_tpl = load_prompt("select_tool")
         if isinstance(prompt_tpl, dict):
             prompt_tpl["inputs"].update(
                 {
@@ -478,7 +446,7 @@ class BulletPlanReasoner(BaseReasoner):
         logger.info("=== PLAN PHASE ===")
         if not state.plan:  # first call → create plan
             logger.info("No existing plan, generating new plan")
-            bullet_plan_template = self._load_prompt("bullet_plan")
+            bullet_plan_template = load_prompt("bullet_plan")
             if isinstance(bullet_plan_template, dict):
                 # Fill in the goal in the JSON template
                 bullet_plan_template["inputs"]["goal"] = state.goal
@@ -573,7 +541,7 @@ class BulletPlanReasoner(BaseReasoner):
         params = self._generate_and_validate_parameters(resolved_tool_id, tool_info, state)
 
         # 3. Substitute memory placeholders
-        concrete_args = resolve_placeholders(params, self.memory)
+        concrete_args = self.memory.resolve_placeholders(params)
         logger.debug(f"Concrete args after placeholder resolution: {concrete_args}")
 
         # 4. Execute the tool and process the result
@@ -609,7 +577,7 @@ class BulletPlanReasoner(BaseReasoner):
             return text.replace("{", "{{").replace("}", "}}")
 
         tool_schema_str = str(tool_info)
-        param_generation_template = self._load_prompt("param_generation")
+        param_generation_template = load_prompt("param_generation")
 
         if isinstance(param_generation_template, dict):
             # Complex prompt building for JSON templates
@@ -664,37 +632,9 @@ class BulletPlanReasoner(BaseReasoner):
             correction_prompt = f"\n\nIMPORTANT: You MUST include all required fields in the parameters: {', '.join(required_fields)}."
             return args, error, correction_prompt
 
-        # 3. Validate placeholders
-        invalid_placeholders = []
-        is_unrecoverable = False
-        error_summary = []
-        for param, value in args.items():
-            if isinstance(value, str):
-                for match in PLACEHOLDER_RE.finditer(value):
-                    path = match.group(1)
-                    if hasattr(self.memory, 'can_resolve') and not self.memory.can_resolve(path):
-                        error_summary.append(f"param '{param}' references invalid memory path '${{memory.{path}}}'")
-                        if param in required_fields:
-                            is_unrecoverable = True
-        
-        if error_summary:
-            full_error = f"Placeholder validation failed: {', '.join(error_summary)}."
-            if is_unrecoverable:
-                raise RuntimeError(f"A required parameter is missing from memory. {full_error}. Available keys: [{', '.join(self.memory.keys())}].")
-            
-            logger.warning(f"Optional parameter placeholder failed. {full_error}. Attempting local correction.")
-            correction_template = self._load_prompt("param_correction_prompt")
-            failed_params_str = json.dumps(args, indent=2)
-            # Format correction prompt
-            if isinstance(correction_template, dict):
-                correction_template.get('context', {})['failed_parameters'] = failed_params_str
-                correction_template.get('context', {})['available_memory_keys'] = ", ".join(self.memory.keys())
-                correction_prompt = json.dumps(correction_template, ensure_ascii=False)
-            else:
-                correction_prompt = correction_template.format(failed_params=failed_params_str, available_memory_keys=", ".join(self.memory.keys()))
-            return args, full_error, correction_prompt
-            
-        return args, None, None # All validations passed
+        # 3. Validate placeholders via memory class
+        error, correction_prompt = self.memory.validate_placeholders(args, required_fields)
+        return args, error, correction_prompt
 
     def _generate_and_validate_parameters(
         self, tool_id: str, tool_info: Dict, state: ReasonerState
@@ -870,7 +810,7 @@ class BulletPlanReasoner(BaseReasoner):
 
         current_step.reflection_attempts += 1
 
-        reflection_template = self._load_prompt("reflection_prompt")
+        reflection_template = load_prompt("reflection_prompt")
         if isinstance(reflection_template, dict):
             reflection_template["inputs"]["goal"] = state.goal
             reflection_template["inputs"]["failed_step_text"] = current_step.text
@@ -1028,7 +968,7 @@ class BulletPlanReasoner(BaseReasoner):
         except Exception as exc:  # noqa: BLE001
             logger.debug("Could not build memory payload: %s", exc)
 
-        reasoning_template = self._load_prompt("reasoning_prompt")
+        reasoning_template = load_prompt("reasoning_prompt")
         if isinstance(reasoning_template, dict):
             reasoning_template["inputs"]["step"] = step.text
             reasoning_template["inputs"]["memory"] = json.dumps(mem_payload, indent=2)
@@ -1055,19 +995,19 @@ class BulletPlanReasoner(BaseReasoner):
             if processed_reply != reply:
                 # Human provided guidance, use it as the reasoning result
                 logger.info("Reasoning step escalated, using human guidance as result")
-                return resolve_placeholders(processed_reply, self.memory)
+                return self.memory.resolve_placeholders(processed_reply)
 
             # Attempt to parse JSON result if present. If successful, resolve
             # placeholders within the structure. Otherwise, resolve on the raw string.
             if processed_reply.startswith("{") and processed_reply.endswith("}"):
                 try:
                     parsed_json = json.loads(processed_reply)
-                    return resolve_placeholders(parsed_json, self.memory)
+                    return self.memory.resolve_placeholders(parsed_json)
                 except json.JSONDecodeError:
                     # Not valid JSON, fall through to treat as a raw string
                     pass
 
-            return resolve_placeholders(processed_reply, self.memory)
+            return self.memory.resolve_placeholders(processed_reply)
         except Exception as exc:  # noqa: BLE001
             logger.error("Reasoning step failed: %s", exc)
             return f"Error during reasoning: {exc}"

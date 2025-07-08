@@ -3,15 +3,12 @@ Abstract base class for memory backends that store and retrieve information.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 
 
 class BaseMemory(ABC):
     """
-    Abstract base class for memory systems.
-
-    Provides simple store/retrieve interface that can be implemented
-    with different backends (dict, file, database, vector store, etc.).
+    Abstract base class for memory implementations.
     """
 
     @abstractmethod
@@ -65,5 +62,19 @@ class BaseMemory(ABC):
 
         Returns:
             List of all keys in memory
+        """
+        pass
+
+    @abstractmethod
+    def resolve_placeholders(self, obj: Any) -> Any:
+        """
+        Recursively substitute memory placeholders inside an object.
+        """
+        pass
+
+    @abstractmethod
+    def validate_placeholders(self, args: Dict[str, Any], required_fields: list) -> tuple[Optional[str], Optional[str]]:
+        """
+        Validates placeholders in arguments, returning an error and correction prompt if needed.
         """
         pass
