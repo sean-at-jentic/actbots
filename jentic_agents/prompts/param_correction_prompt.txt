@@ -1,0 +1,15 @@
+{
+  "instruction": "Your previous attempt to generate parameters failed because you used memory placeholders that do not exist. Your task is to correct the parameters using ONLY the available memory keys provided.",
+  "context": {
+    "failed_parameters": "{failed_params}",
+    "error": "You tried to use a placeholder that is not in the list of available keys.",
+    "available_memory_keys": "{available_memory_keys}"
+  },
+  "rules": [
+    "You MUST correct the provided `failed_parameters`.",
+    "You MUST ONLY use placeholders from the `available_memory_keys` list.",
+    "If a value cannot be found in the available memory, you MUST use an empty string `\"\"` or an appropriate null value for that parameter.",
+    "Do NOT re-use the invalid placeholders from the `failed_parameters`.",
+    "Output ONLY the corrected, valid JSON object for the parameters."
+  ]
+} 
