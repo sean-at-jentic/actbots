@@ -31,13 +31,13 @@
       }
     },
     "llm": {
-        "provider": "openai",
-        "model": "gpt-4o"
+        "provider": "gemini",
+        "model": "gemini/gemini-2.5-flash"
     },
     "memory": {
       "chroma_path": "jentic_agents/data/chroma_db",
-      "llm_provider": "openai",
-      "llm_model": "gpt-4",
+      "llm_provider": "gemini",
+      "llm_model": "gemini/gemini-2.5-flash",
       "embed_model": "text-embedding-3-small"
     }
   } 

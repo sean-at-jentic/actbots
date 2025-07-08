@@ -78,8 +78,8 @@ def main():
         print("Type your goal below, or 'quit' to exit.")
     print("-" * 50)
 
-    provider = get_config_value("llm", "provider", default="openai")
-    model_name = get_config_value("llm", "model", default="gpt-4o")
+    provider = get_config_value("llm", "provider", default="gemini")
+    model_name = get_config_value("llm", "model", default="gemini/gemini-2.5-flash")
 
     if not os.getenv("JENTIC_API_KEY"):
         print("ERROR: Missing JENTIC_API_KEY in your .env file.")

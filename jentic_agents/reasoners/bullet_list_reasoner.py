@@ -50,6 +50,7 @@ from ..memory.scratch_pad import ScratchPadMemory
 from ..utils.logger import get_logger
 from .base_reasoner import StepType
 from ..communication.hitl.base_intervention_hub import BaseInterventionHub, NoEscalation
+from ..utils.config import get_config_value
 
 # Initialize module logger using the shared logging utility
 logger = get_logger(__name__)
@@ -307,7 +308,7 @@ class BulletPlanReasoner(BaseReasoner):
         raw_reply = self.llm.chat(
             messages=[{"role": "user", "content": prompt}]
         ).strip()
-        logger.debug("LLM tool-selection reply: %s", raw_reply)
+        logger.info(f"LLM tool-selection reply: {raw_reply}")
 
         # 1️⃣ Numeric selection
         match = re.search(r"(\d+)", raw_reply)
@@ -315,11 +316,19 @@ class BulletPlanReasoner(BaseReasoner):
             idx = int(match.group(1)) - 1
             if 0 <= idx < len(hits):
                 chosen = hits[idx]
-                return (
+                # Set tool name for logging
+                step.tool_name = (
+                    chosen.get("name", None)
+                    if isinstance(chosen, dict)
+                    else getattr(chosen, "name", None)
+                )
+                tool_id = (
                     chosen["id"]
                     if isinstance(chosen, dict)
                     else getattr(chosen, "id", "unknown")
                 )
+                logger.info(f"LLM selected tool #{idx+1}: {tool_id} ({step.tool_name})")
+                return tool_id
 
         # 2️⃣ ID or name substring
         lower_reply = raw_reply.lower()
@@ -327,9 +336,14 @@ class BulletPlanReasoner(BaseReasoner):
             hid = h["id"] if isinstance(h, dict) else getattr(h, "id", "")
             hname = h.get("name", "") if isinstance(h, dict) else getattr(h, "name", "")
             if hid and hid.lower() in lower_reply:
+                step.tool_name = hname or hid
+                logger.info(f"LLM selected tool by ID: {hid} ({step.tool_name})")
                 return hid
             if hname and hname.lower() in lower_reply:
-                return h["id"] if isinstance(h, dict) else getattr(h, "id", "unknown")
+                step.tool_name = hname
+                tool_id = h["id"] if isinstance(h, dict) else getattr(h, "id", "unknown")
+                logger.info(f"LLM selected tool by name: {tool_id} ({step.tool_name})")
+                return tool_id
 
         # 3️⃣ Provider heuristic
         step_lower = step.text.lower()
@@ -340,7 +354,10 @@ class BulletPlanReasoner(BaseReasoner):
                 else getattr(h, "api_name", "").lower()
             )
             if api_name and api_name.split(".")[0] in step_lower:
-                return h["id"] if isinstance(h, dict) else getattr(h, "id", "unknown")
+                step.tool_name = h.get("name", "") if isinstance(h, dict) else getattr(h, "name", "")
+                tool_id = h["id"] if isinstance(h, dict) else getattr(h, "id", "unknown")
+                logger.info(f"LLM selected tool by provider: {tool_id} ({step.tool_name})")
+                return tool_id
 
         # 4️⃣ Fallback first hit
         first = hits[0]
@@ -349,27 +366,34 @@ class BulletPlanReasoner(BaseReasoner):
             if isinstance(first, dict)
             else getattr(first, "name", None)
         )
-        return (
-            first["id"] if isinstance(first, dict) else getattr(first, "id", "unknown")
-        )
+        tool_id = first["id"] if isinstance(first, dict) else getattr(first, "id", "unknown")
+        logger.info(f"LLM fallback to first tool: {tool_id} ({step.tool_name})")
+        return tool_id
 
     def __init__(
         self,
         jentic: JenticClient,
         memory: ScratchPadMemory,
         llm: Optional[BaseLLM] = None,
-        model: str = "gpt-4o",
-        max_iters: int = 20,
+        max_iters: int = 10,
         search_top_k: int = 15,
         intervention_hub: Optional[BaseInterventionHub] = None,
-    ) -> None:
+    ):
         logger.info(
-            f"Initializing BulletPlanReasoner with model={model}, max_iters={max_iters}, search_top_k={search_top_k}"
+            f"Initializing BulletPlanReasoner with model={get_config_value('llm', 'model', 'gemini/gemini-2.5-flash')}, max_iters={max_iters}, search_top_k={search_top_k}"
         )
         super().__init__()
         self.jentic = jentic
         self.memory = memory
-        self.llm = llm or LiteLLMChatLLM(model=model)
+
+        if llm is None:
+            model_name = get_config_value(
+                "llm", "model", default="gemini/gemini-2.5-flash"
+            )
+            llm = LiteLLMChatLLM(model=model_name)
+            logger.info(f"Initializing BulletPlanReasoner with default LLM: {model_name}")
+
+        self.llm = llm
         self.max_iters = max_iters
         self.search_top_k = search_top_k
         self.escalation = intervention_hub or NoEscalation()
@@ -499,7 +523,7 @@ class BulletPlanReasoner(BaseReasoner):
     # 2. SELECT TOOL ----------------------------------------------------
     def select_tool(self, plan_step: Step, state: ReasonerState):
         """
-        Selects a tool for a given plan step. It now uses an LLM to choose from search results.
+        Selects a tool for a given plan step using JENTIC search and LLM selection.
         """
         logger.info("=== TOOL SELECTION PHASE ===")
         logger.info(f"Selecting tool for step: {plan_step.text}")
@@ -519,8 +543,8 @@ class BulletPlanReasoner(BaseReasoner):
                     plan_step.tool_id = stored["id"]
                     return stored["id"]
 
+        # Search using JENTIC
         search_query = self._build_search_query(plan_step)
-        # Only log the search query and tool candidates, not every phase or step
         logger.info(f"Search query: {search_query}")
         search_hits = self.jentic.search(search_query, top_k=self.search_top_k)
 
@@ -528,7 +552,7 @@ class BulletPlanReasoner(BaseReasoner):
             logger.error(f"No tools found for query: '{search_query}'")
             raise RuntimeError(f"No tools found for query: '{search_query}'")
 
-        # Sort hits so that those whose provider (api_name or its domain) is mentioned in the plan step are at the top
+        # Sort hits to prioritize: 1) provider mentioned 2) operations over workflows 3) simple over complex
         step_text_lower = plan_step.text.lower()
 
         def provider_mentioned(hit):
@@ -542,91 +566,43 @@ class BulletPlanReasoner(BaseReasoner):
             domain_part = api_name.split(".")[0]
             return (api_name in step_text_lower) or (domain_part in step_text_lower)
 
-        search_hits = sorted(search_hits, key=lambda h: not provider_mentioned(h))
+        def is_operation(hit):
+            """Prefer operations over workflows for direct API calls"""
+            hit_type = hit.get("type", "") if isinstance(hit, dict) else getattr(hit, "type", "")
+            return hit_type == "operation"
 
-        tool_names_list = []
-        tool_lines_list = []
-        for i, h in enumerate(search_hits):
-            if isinstance(h, dict):
-                name = h.get("name", h.get("id", "Unknown"))
-                api_name = h.get("api_name")
-                description = h.get("description", "")
-                hit_id = h.get("id", "Unknown")
-            else:
-                name = getattr(h, "name", "Unknown")
-                api_name = getattr(h, "api_name", None)
-                description = getattr(h, "description", "")
-                hit_id = getattr(h, "id", "Unknown")
-            display_name = f"{name} ({api_name})" if api_name else name
-            logger.info(f"  {i+1}. {display_name} (ID: {hit_id}) - {description}")
-            tool_lines_list.append(f"{i+1}. {display_name} — {description}")
-        tool_lines = "\n".join(tool_lines_list)
+        def is_simple_task(hit):
+            """Prefer direct message operations over webhook creation"""
+            description = (hit.get("description", "") if isinstance(hit, dict) 
+                         else getattr(hit, "description", "")).lower()
+            name = (hit.get("name", "") if isinstance(hit, dict) 
+                   else getattr(hit, "name", "")).lower()
+            
+            # Prefer direct message operations
+            if any(word in description or word in name for word in ["send message", "post message", "create message"]):
+                return True
+            # Deprioritize webhook creation
+            if any(word in description or word in name for word in ["webhook", "create-channel-webhook"]):
+                return False
+            return True
 
-        select_tool_template = self._load_prompt("select_tool")
-        if isinstance(select_tool_template, dict):
-            select_tool_template["inputs"]["goal"] = state.goal
-            select_tool_template["inputs"]["plan_step"] = plan_step.text
-            select_tool_template["inputs"]["memory_keys"] = ", ".join(
-                self.memory.keys()
-            )
-            select_tool_template["inputs"]["tool_candidates"] = tool_lines
-            prompt = json.dumps(select_tool_template, ensure_ascii=False)
-        else:
-            prompt = select_tool_template.format(
-                goal=state.goal,
-                plan_step=plan_step.text,
-                memory_keys=", ".join(self.memory.keys()),
-                tool_candidates=tool_lines,
-            )
+        search_hits = sorted(search_hits, key=lambda h: (
+            not provider_mentioned(h),    # Provider match first
+            not is_operation(h),          # Operations before workflows  
+            not is_simple_task(h)         # Simple tasks before complex
+        ))
 
-        try:
-            # Add human guidance context if available
-            context_aware_prompt = self._add_human_guidance_to_prompt(prompt)
-            response = self.llm.chat(
-                messages=[{"role": "user", "content": context_aware_prompt}]
-            )
-            raw_reply = response.strip()
-            num_match = re.search(r"(\d+)", raw_reply)
-            if num_match:
-                tool_index = int(num_match.group(1)) - 1
-            else:
-                tool_index = None
-            if tool_index is not None and 0 <= tool_index < len(search_hits):
-                selected_tool = search_hits[tool_index]
-                logger.info(
-                    "LLM selected tool #%s: %s (%s)",
-                    tool_index + 1,
-                    (
-                        selected_tool["id"]
-                        if isinstance(selected_tool, dict)
-                        else getattr(selected_tool, "id", "unknown")
-                    ),
-                    (
-                        selected_tool.get("name", "unnamed")
-                        if isinstance(selected_tool, dict)
-                        else getattr(selected_tool, "name", "unnamed")
-                    ),
-                )
-                # store tool name
-                plan_step.tool_name = (
-                    selected_tool.get("name", None)
-                    if isinstance(selected_tool, dict)
-                    else getattr(selected_tool, "name", None)
-                )
-                return (
-                    selected_tool["id"]
-                    if isinstance(selected_tool, dict)
-                    else getattr(selected_tool, "id", "unknown")
-                )
-            # No valid tool selected
-            raise RuntimeError(
-                "LLM tool selection failed: No valid tool index or provider match. Aborting step."
-            )
-        except (ValueError, IndexError, Exception) as e:
-            logger.error(
-                f"Error during LLM tool selection: {e}. Using first search hit as fallback."
-            )
-            return search_hits[0]["id"]
+        # Log prioritized tool candidates for debugging
+        logger.info(f"Prioritized tool candidates (top 5):")
+        for i, hit in enumerate(search_hits[:5]):
+            hit_type = hit.get("type", "unknown") if isinstance(hit, dict) else getattr(hit, "type", "unknown")
+            name = hit.get("name", "Unknown") if isinstance(hit, dict) else getattr(hit, "name", "Unknown") 
+            api_name = hit.get("api_name", "") if isinstance(hit, dict) else getattr(hit, "api_name", "")
+            description = hit.get("description", "") if isinstance(hit, dict) else getattr(hit, "description", "")
+            logger.info(f"  {i+1}. [{hit_type}] {name} ({api_name}) - {description[:60]}...")
+
+        # Delegate to optimized LLM selection method
+        return self._select_tool_with_llm(plan_step, search_hits, state)
 
     # 3. ACT ------------------------------------------------------------
     def act(self, tool_id: str, state: ReasonerState, current_step: Step):
