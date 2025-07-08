@@ -37,7 +37,7 @@ class ScratchPadMemory(BaseMemory):
     Supports both simple key-value storage and enhanced memory items with
     descriptions, types, and placeholder resolution.
     """
-    _MEMORY_RE = re.compile(r"\$\{(?:\{)?memory\.([\w\._\[\]]+)(?:\})?\}")
+    _MEMORY_RE = re.compile(r"\\$\\{(?:\\{)?memory\\.([\\w\\._\\[\\]]+)(?:\\})?\\}")
 
     def __init__(self):
         """Initialize empty scratch pad memory."""

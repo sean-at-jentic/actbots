@@ -583,8 +583,8 @@ class BulletPlanReasoner(BaseReasoner):
             # Complex prompt building for JSON templates
             param_generation_template["inputs"].update({
                 "tool_id": tool_id,
-                "tool_schema": _escape_braces(tool_schema_str),
-                "memory_enum": _escape_braces(memory_enum),
+                "selected_operation": _escape_braces(tool_schema_str),
+                "memory": _escape_braces(memory_enum),
                 "goal": state.goal,
                 "allowed_memory_keys": allowed_memory_keys_str,
             })
@@ -600,8 +600,8 @@ class BulletPlanReasoner(BaseReasoner):
             # Simple string formatting
             prompt = param_generation_template.format(
                 tool_id=tool_id,
-                tool_schema=_escape_braces(tool_schema_str),
-                memory_enum=_escape_braces(memory_enum),
+                selected_operation=_escape_braces(tool_schema_str),
+                memory=_escape_braces(memory_enum),
                 goal=state.goal,
                 allowed_memory_keys=allowed_memory_keys_str,
             )
