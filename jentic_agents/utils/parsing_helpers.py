@@ -4,7 +4,7 @@ from JSON strings and for recursively cleaning nested data structures.
 
 from __future__ import annotations
 
-from typing import Any, List
+from typing import Any, List, Dict
 
 __all__: List[str] = ["strip_backtick_fences", "cleanse", "unwrap_singleton_json"]
 
@@ -64,3 +64,41 @@ def cleanse(obj: Any) -> Any:
     if isinstance(obj, dict):
         return {k: cleanse(v) for k, v in obj.items()}
     return obj
+
+
+def extract_fenced_code(text: str) -> str:
+    """Return the first triple‑backtick‑fenced block, else raise."""
+    import re
+    from .logger import get_logger
+    logger = get_logger(__name__)
+
+    logger.debug("Extracting fenced code from text")
+    m = re.search(r"```[\s\S]+?```", text)
+    if not m:
+        logger.error("No fenced plan in LLM response")
+        raise RuntimeError("No fenced plan in LLM response")
+    fenced = m.group(0)
+    logger.debug(f"Found fenced block: {fenced}")
+
+    # Use existing helper to strip fences
+    return strip_backtick_fences(fenced)
+
+
+def safe_json_loads(text: str) -> Dict[str, Any]:
+    """Parse JSON even if the LLM wrapped it in a Markdown fence."""
+    import json
+    from .logger import get_logger
+    logger = get_logger(__name__)
+
+    logger.debug(f"Parsing JSON from text: {text}")
+    text = strip_backtick_fences(text.strip())
+    try:
+        result = json.loads(text or "{}")
+        logger.debug(f"Parsed JSON result: {result}")
+        return result
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse JSON: {e}")
+        raise ValueError(f"Failed to parse JSON: {e}\n{text}")
+
+
+__all__.extend(["extract_fenced_code", "safe_json_loads"])

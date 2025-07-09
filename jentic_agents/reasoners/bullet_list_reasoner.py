@@ -42,7 +42,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # local utils
-from ..utils.json_cleanser import strip_backtick_fences, cleanse
+from ..utils.parsing_helpers import (
+    extract_fenced_code,
+    safe_json_loads,
+    strip_backtick_fences,
+)
+from ..utils.prompt_loader import load_prompt
 from .base_reasoner import BaseReasoner
 from ..platform.jentic_client import JenticClient  # local wrapper, not the raw SDK
 from ..utils.llm import BaseLLM, LiteLLMChatLLM
@@ -55,19 +60,8 @@ from ..utils.config import get_config_value
 # Initialize module logger using the shared logging utility
 logger = get_logger(__name__)
 
-# ---------------------------------------------------------------------------
-# Module-level constants
-# ---------------------------------------------------------------------------
-
 # Maximum number of reflection attempts before giving up on a failed step
 MAX_REFLECTION_ATTEMPTS = 3
-
-# Remove automatic retry limits - let the agent choose when to escalate
-
-# ---------------------------------------------------------------------------
-# Helper data models
-# ---------------------------------------------------------------------------
-
 
 @dataclass
 class Step:
@@ -204,33 +198,21 @@ def parse_bullet_plan(markdown: str) -> deque[Step]:
 class BulletPlanReasoner(BaseReasoner):
     """Concrete Reasoner that follows the BulletPlan strategy."""
 
-    @staticmethod
-    def _load_prompt(prompt_name: str):
-        """Load a prompt from the prompts directory. Return JSON if file is JSON, else string."""
-        current_dir = Path(__file__).parent.parent
-        prompt_path = current_dir / "prompts" / f"{prompt_name}.txt"
-        try:
-            with open(prompt_path, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-                if content.startswith("{"):
-                    return json.loads(content)
-                return content
-        except FileNotFoundError:
-            logger.error(f"Prompt file not found: {prompt_path}")
-            raise RuntimeError(f"Prompt file not found: {prompt_path}")
-
-    def _build_search_query(self, step: "Step") -> str:
+    def _build_search_query(self, step: "Step", state: "ReasonerState") -> str:
         """
-        Turn a plan step into an API-hub search query using the LLM-based keyword-extraction prompt only.
-        If the LLM fails, raise an error.
+        Turn a plan step into an API-hub search query, using the main goal for context.
         """
         try:
-            kw_template = self._load_prompt("keyword_extraction")
+            kw_template = load_prompt("keyword_extraction")
+            
+            # Combine the step text with the overall goal for better context
+            contextual_text = f"Goal: {state.goal}\nStep: {step.text}"
+            
             if isinstance(kw_template, dict):
-                kw_template["inputs"]["context_text"] = step.text
+                kw_template["inputs"]["context_text"] = contextual_text
                 prompt = json.dumps(kw_template, ensure_ascii=False)
             else:
-                prompt = kw_template.format(context_text=step.text)
+                prompt = kw_template.format(context_text=contextual_text)
 
             # Add human guidance context if available
             context_aware_prompt = self._add_human_guidance_to_prompt(prompt)
@@ -286,7 +268,7 @@ class BulletPlanReasoner(BaseReasoner):
         candidate_block = "\n".join(numbered_lines)
 
         # Fill the prompt
-        prompt_tpl = self._load_prompt("select_tool")
+        prompt_tpl = load_prompt("select_tool")
         if isinstance(prompt_tpl, dict):
             prompt_tpl["inputs"].update(
                 {
@@ -502,7 +484,7 @@ class BulletPlanReasoner(BaseReasoner):
         logger.info("=== PLAN PHASE ===")
         if not state.plan:  # first call → create plan
             logger.info("No existing plan, generating new plan")
-            bullet_plan_template = self._load_prompt("bullet_plan")
+            bullet_plan_template = load_prompt("bullet_plan")
             if isinstance(bullet_plan_template, dict):
                 # Fill in the goal in the JSON template
                 bullet_plan_template["inputs"]["goal"] = state.goal
@@ -515,7 +497,7 @@ class BulletPlanReasoner(BaseReasoner):
             response = self.llm.chat(messages=messages)
             logger.info(f"LLM planning response:\n{response}")
             # The plan is inside a markdown code fence.
-            plan_md = self._extract_fenced_code(response)
+            plan_md = extract_fenced_code(response)
             state.plan = parse_bullet_plan(plan_md)
             logger.info(f"Generated plan with {len(state.plan)} steps:")
             for i, step in enumerate(state.plan):
@@ -529,7 +511,7 @@ class BulletPlanReasoner(BaseReasoner):
         """
         logger.info(f"TOOL SELECTION: {plan_step.text[:50]}...")
 
-        # ---- Fast path: "Execute <memory_key> ..." → reuse stored tool_id ----
+        # Fast path: If the step is 'Execute <memory_key>', reuse the tool_id from memory if available
         exec_match = re.match(
             r"execute\s+([\w\-_]+)", plan_step.text.strip(), re.IGNORECASE
         )
@@ -545,7 +527,7 @@ class BulletPlanReasoner(BaseReasoner):
                     return stored["id"]
 
         # Search using JENTIC
-        search_query = self._build_search_query(plan_step)
+        search_query = self._build_search_query(plan_step, state)
         logger.info(f"Search query: {search_query}")
         search_hits = self.jentic.search(search_query, top_k=self.search_top_k)
 
@@ -650,125 +632,160 @@ class BulletPlanReasoner(BaseReasoner):
     # 3. ACT ------------------------------------------------------------
     def act(self, tool_id: str, state: ReasonerState, current_step: Step):
         """
-        Generate parameters for and execute a Jentic tool.
+        Orchestrates parameter generation and execution for a Jentic tool.
         """
         logger.info(f"EXECUTING: {tool_id} ({current_step.tool_name or 'unnamed'})")
 
-        # If the tool_id is a memory key (e.g., 'send_op'), resolve it to the actual tool_id
+        # 1. Resolve tool ID and load schema
+        resolved_tool_id = self._resolve_tool_id_from_memory(tool_id)
+        tool_info = self.jentic.load(resolved_tool_id)
+        logger.debug(f"Tool info: {tool_info}")
+
+        # 2. Generate and validate parameters
+        params = self._generate_and_validate_parameters(resolved_tool_id, tool_info, state)
+
+        # 3. Substitute memory placeholders
+        concrete_args = self.memory.resolve_placeholders(params)
+        logger.debug(f"Concrete args after placeholder resolution: {concrete_args}")
+
+        # 4. Execute the tool and process the result
+        logger.info(f"Executing tool {resolved_tool_id} with selected arguments.")
+        result = self.jentic.execute(resolved_tool_id, concrete_args)
+
+        success = self._determine_tool_execution_success(result)
+        logger.info(f"Tool execution completed. Success: {success}")
+        return result
+
+    def _resolve_tool_id_from_memory(self, tool_id: str) -> str:
+        """If tool_id is a memory key, resolve it to the actual tool UUID."""
         if tool_id in self.memory.keys():
             stored = self.memory.retrieve(tool_id)
-            # If stored is a dict with an 'id' field, use that
             if isinstance(stored, dict) and "id" in stored:
-                logger.info(
-                    f"Resolved memory key '{tool_id}' to tool_id: {stored['id']}"
-                )
-                tool_id = stored["id"]
+                resolved_id = stored["id"]
+                logger.info(f"Resolved memory key '{tool_id}' to tool_id: {resolved_id}")
+                return resolved_id
             else:
                 logger.warning(
                     f"Memory key '{tool_id}' did not resolve to a valid tool_id. Using as-is."
                 )
+        return tool_id
 
-        logger.info("Loading tool information from Jentic")
-        tool_info = self.jentic.load(tool_id)
-        logger.debug(f"Tool info: {tool_info}")
-
-        # Extract required fields if present
-        required_fields = (
-            tool_info.get("required", []) if isinstance(tool_info, dict) else []
-        )
-        logger.debug(f"Tool schema for parameter generation: {tool_info}")
-
-        logger.info("Enumerating memory for prompt")
+    def _prepare_param_generation_prompt(self, tool_id: str, tool_info: Dict, state: ReasonerState) -> str:
+        """Loads and formats the prompt for generating tool parameters."""
+        required_fields = tool_info.get("required", [])
         memory_enum = self.memory.enumerate_for_prompt()
-        logger.debug(f"Memory enumeration: {memory_enum}")
+        available_memory_keys = list(self.memory.keys())
+        allowed_memory_keys_str = ", ".join(available_memory_keys) if available_memory_keys else "(none)"
 
         def _escape_braces(text: str) -> str:
-            """Escape curly braces so str.format doesn't treat them as placeholders."""
             return text.replace("{", "{{").replace("}", "}}")
 
-        # Convert tool schema to string for formatting if it's a dict
-        tool_schema_str = str(tool_info) if isinstance(tool_info, dict) else tool_info
+        tool_schema_str = str(tool_info)
+        param_generation_template = load_prompt("param_generation")
 
-        param_generation_template = self._load_prompt("param_generation")
         if isinstance(param_generation_template, dict):
-            param_generation_template["inputs"]["tool_id"] = tool_id
-            param_generation_template["inputs"]["tool_schema"] = _escape_braces(
-                tool_schema_str
-            )
-            param_generation_template["inputs"]["memory_enum"] = _escape_braces(
-                memory_enum
-            )
-            param_generation_template["inputs"]["goal"] = state.goal
+            # Complex prompt building for JSON templates
+            param_generation_template["inputs"].update({
+                "tool_id": tool_id,
+                "selected_operation": _escape_braces(tool_schema_str),
+                "memory": _escape_braces(memory_enum),
+                "goal": state.goal,
+                "allowed_memory_keys": allowed_memory_keys_str,
+            })
+            if "instruction" in param_generation_template:
+                param_generation_template["instruction"] = param_generation_template["instruction"].replace("{allowed_memory_keys}", allowed_memory_keys_str)
+            if "rules" in param_generation_template:
+                param_generation_template["rules"] = [
+                    rule.replace("{allowed_memory_keys}", allowed_memory_keys_str) if isinstance(rule, str) else rule
+                    for rule in param_generation_template["rules"]
+                ]
             prompt = json.dumps(param_generation_template, ensure_ascii=False)
         else:
+            # Simple string formatting
             prompt = param_generation_template.format(
                 tool_id=tool_id,
-                tool_schema=_escape_braces(tool_schema_str),
-                memory_enum=_escape_braces(memory_enum),
+                selected_operation=_escape_braces(tool_schema_str),
+                memory=_escape_braces(memory_enum),
                 goal=state.goal,
+                allowed_memory_keys=allowed_memory_keys_str,
             )
-        logger.debug(f"Parameter generation prompt:\n{prompt}")
+        
+        logger.info(f"Available memory keys for parameter filling: {available_memory_keys}")
+        return self._add_human_guidance_to_prompt(prompt)
 
-        # Add human guidance context if available
-        context_aware_prompt = self._add_human_guidance_to_prompt(prompt)
-        messages = [{"role": "user", "content": context_aware_prompt}]
-        logger.info("Calling LLM for parameter generation")
-        args_json = self.llm.chat(messages=messages)
-        logger.info(f"LLM parameter response:\n{args_json}")
-
+    def _validate_llm_params(
+        self, args_json: str, required_fields: List[str]
+    ) -> tuple[Optional[Dict], Optional[str], Optional[str]]:
+        """
+        Parses and validates LLM-generated parameters.
+        Returns (parsed_args, error_message, correction_prompt).
+        """
+        # 1. Parse JSON
         try:
-            logger.info("Parsing JSON parameters")
-            args: Dict[str, Any] = self._safe_json_loads(args_json)
-            logger.debug(f"Parsed args: {args}")
+            args = safe_json_loads(args_json)
         except ValueError as e:
             logger.error(f"Failed to parse JSON args: {e}")
-            logger.error(f"Raw args_json: {args_json}")
-            raise RuntimeError(f"LLM produced invalid JSON args: {e}\n{args_json}")
+            correction_prompt = "ERROR: The previous response was not valid JSON. Please try again, ensuring your output is a single, valid JSON object with double quotes."
+            return None, f"Invalid JSON: {e}", correction_prompt
 
-        # Check for missing required fields and re-prompt if needed
+        # 2. Check for missing required fields
         missing_fields = [field for field in required_fields if field not in args]
         if missing_fields:
-            logger.warning(
-                f"Missing required fields in LLM output: {missing_fields}. Re-prompting LLM."
-            )
-            # Add explicit instruction to include all required fields
-            explicit_prompt = f"{prompt}\n\nIMPORTANT: You MUST include all required fields in the parameters: {', '.join(required_fields)}."
-            # Add human guidance context for the re-prompt too
-            context_aware_explicit_prompt = self._add_human_guidance_to_prompt(
-                explicit_prompt
-            )
-            messages = [{"role": "user", "content": context_aware_explicit_prompt}]
-            args_json = self.llm.chat(messages=messages)
-            logger.info(f"LLM parameter response (re-prompt):\n{args_json}")
-            try:
-                args: Dict[str, Any] = self._safe_json_loads(args_json)
-                logger.debug(f"Parsed args after re-prompt: {args}")
-            except ValueError as e:
-                logger.error(f"Failed to parse JSON args after re-prompt: {e}")
-                logger.error(f"Raw args_json: {args_json}")
-                raise RuntimeError(
-                    f"LLM produced invalid JSON args after re-prompt: {e}\n{args_json}"
-                )
+            error = f"Missing required fields: {missing_fields}"
+            logger.warning(f"{error}. Re-prompting LLM.")
+            correction_prompt = f"\n\nIMPORTANT: You MUST include all required fields in the parameters: {', '.join(required_fields)}."
+            return args, error, correction_prompt
 
-        # Host‑side memory placeholder substitution (simple impl)
-        logger.info("Resolving memory placeholders")
-        concrete_args = self._resolve_placeholders(args)
-        logger.debug(f"Concrete args after placeholder resolution: {concrete_args}")
+        # 3. Validate placeholders via memory class
+        error, correction_prompt = self.memory.validate_placeholders(args, required_fields)
+        return args, error, correction_prompt
 
-        logger.info(f"Executing tool {tool_id} with selected arguments.")
-        result = self.jentic.execute(tool_id, concrete_args)
-        # Support both dict and OperationResult
-        success = None
+    def _generate_and_validate_parameters(
+        self, tool_id: str, tool_info: Dict, state: ReasonerState
+    ) -> Dict[str, Any]:
+        """Manages the loop of generating parameters via LLM and validating them."""
+        initial_prompt = self._prepare_param_generation_prompt(tool_id, tool_info, state)
+        required_fields = tool_info.get("required", [])
+        
+        max_param_attempts = 3
+        last_error = None
+        current_prompt = initial_prompt
+
+        for attempt in range(max_param_attempts):
+            logger.info(f"Parameter generation attempt {attempt + 1}/{max_param_attempts}")
+            
+            args_json = self.llm.chat([{"role": "user", "content": current_prompt}])
+            logger.info(f"LLM parameter response:\n{args_json}")
+
+            args, error, correction_prompt = self._validate_llm_params(args_json, required_fields)
+            
+            if not error:
+                logger.info("Parameter validation successful.")
+                return args  # Success
+            
+            last_error = error
+            if correction_prompt:
+                # Append or replace prompt for next attempt
+                if "ERROR:" in correction_prompt:
+                    current_prompt = f"{correction_prompt} Original goal was: {state.goal}"
+                else:
+                    current_prompt += correction_prompt
+
+        raise RuntimeError(
+            f"Parameter generation failed after {max_param_attempts} attempts. Last error: {last_error}"
+        )
+
+    def _determine_tool_execution_success(self, result: Any) -> bool:
+        """Checks the result of a tool execution and returns a boolean for success."""
         if isinstance(result, dict):
-            inner = result.get("result", None)
+            inner = result.get("result")
             if hasattr(inner, "success"):
-                success = getattr(inner, "success", None)
+                return getattr(inner, "success", False)
             elif isinstance(inner, dict):
-                success = inner.get("success", None)
+                return inner.get("success", False)
         elif hasattr(result, "success"):
-            success = getattr(result, "success", None)
-        logger.info(f"Tool execution completed. Success: {success}")
-        return result
+            return getattr(result, "success", False)
+        return False # Default to failure if success cannot be determined
 
     # 4. OBSERVE --------------------------------------------------------
     def observe(self, observation: Any, state: ReasonerState):
@@ -895,12 +912,16 @@ class BulletPlanReasoner(BaseReasoner):
 
         current_step.reflection_attempts += 1
 
-        reflection_template = self._load_prompt("reflection_prompt")
+        reflection_template = load_prompt("reflection_prompt")
         if isinstance(reflection_template, dict):
             reflection_template["inputs"]["goal"] = state.goal
             reflection_template["inputs"]["failed_step_text"] = current_step.text
             reflection_template["inputs"]["error_message"] = err_msg
             reflection_template["inputs"]["history"] = "\n".join(state.history)
+            tool_schema = json.dumps(current_step.params or {}, indent=2)
+            failed_args  = json.dumps(getattr(current_step, "args", {}), indent=2)
+            reflection_template["inputs"]["tool_schema"] = tool_schema
+            reflection_template["inputs"]["failed_args"] = failed_args
             prompt = json.dumps(reflection_template, ensure_ascii=False)
         else:
             prompt = reflection_template.format(
@@ -1049,7 +1070,7 @@ class BulletPlanReasoner(BaseReasoner):
         except Exception as exc:  # noqa: BLE001
             logger.debug("Could not build memory payload: %s", exc)
 
-        reasoning_template = self._load_prompt("reasoning_prompt")
+        reasoning_template = load_prompt("reasoning_prompt")
         if isinstance(reasoning_template, dict):
             reasoning_template["inputs"]["step"] = step.text
             reasoning_template["inputs"]["memory"] = json.dumps(mem_payload, indent=2)
@@ -1076,19 +1097,19 @@ class BulletPlanReasoner(BaseReasoner):
             if processed_reply != reply:
                 # Human provided guidance, use it as the reasoning result
                 logger.info("Reasoning step escalated, using human guidance as result")
-                return self._resolve_placeholders(processed_reply)
+                return self.memory.resolve_placeholders(processed_reply)
 
             # Attempt to parse JSON result if present. If successful, resolve
             # placeholders within the structure. Otherwise, resolve on the raw string.
             if processed_reply.startswith("{") and processed_reply.endswith("}"):
                 try:
                     parsed_json = json.loads(processed_reply)
-                    return self._resolve_placeholders(parsed_json)
+                    return self.memory.resolve_placeholders(parsed_json)
                 except json.JSONDecodeError:
                     # Not valid JSON, fall through to treat as a raw string
                     pass
 
-            return self._resolve_placeholders(processed_reply)
+            return self.memory.resolve_placeholders(processed_reply)
         except Exception as exc:  # noqa: BLE001
             logger.error("Reasoning step failed: %s", exc)
             return f"Error during reasoning: {exc}"
@@ -1097,7 +1118,7 @@ class BulletPlanReasoner(BaseReasoner):
     # REQUIRED PUBLIC API (BaseReasoner)
     # ------------------------------------------------------------------
 
-    def run(self, goal: str, max_iterations: int = 10):  # type: ignore[override]
+    def run(self, goal: str, max_iterations: int = 15):  # type: ignore[override]
         """Execute the reasoning loop until all plan steps are done or iteration cap reached."""
         logger.info(
             f"Reasoning started for goal: {goal} | Max iterations: {max_iterations}"
@@ -1301,7 +1322,6 @@ class BulletPlanReasoner(BaseReasoner):
 
         # Build context for the agent to decide
         remaining_steps = list(state.plan)
-        recent_failures = [h for h in state.history if "failed" in h.lower()]
 
         escalation_check_prompt = f"""
 You are working on the goal: "{state.goal}"
@@ -1380,60 +1400,3 @@ Your choice:"""
             # No human guidance in memory yet
             pass
         return base_prompt
-
-    # ------------------------------------------------------------------
-    # Helper utilities
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _extract_fenced_code(text: str) -> str:
-        """Return the first triple‑backtick‑fenced block, else raise."""
-        logger.debug("Extracting fenced code from text")
-        m = re.search(r"```[\s\S]+?```", text)
-        if not m:
-            logger.error("No fenced plan in LLM response")
-            raise RuntimeError("No fenced plan in LLM response")
-        fenced = m.group(0)
-        logger.debug(f"Found fenced block: {fenced}")
-
-        # Remove opening and closing fences (```)
-        inner = fenced.strip("`")  # remove all backticks at ends
-        # After stripping, drop any leading language hint (e.g. ```markdown)
-        if "\n" in inner:
-            inner = inner.split("\n", 1)[1]  # drop first line (language) if present
-        # Remove trailing fence that may remain after stripping leading backticks
-        if inner.endswith("```"):
-            inner = inner[:-3]
-        result = inner.strip()
-        logger.debug(f"Extracted inner content: {result}")
-        return result
-
-    def _safe_json_loads(self, text: str) -> Dict[str, Any]:
-        """Parse JSON even if the LLM wrapped it in a Markdown fence."""
-        logger.debug(f"Parsing JSON from text: {text}")
-        text = strip_backtick_fences(text.strip())
-        try:
-            result = json.loads(text or "{}")
-            logger.debug(f"Parsed JSON result: {result}")
-            return result
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse JSON: {e}")
-            raise ValueError(f"Failed to parse JSON: {e}\n{text}")
-
-    def _resolve_placeholders(self, obj: Any) -> Any:
-        """Delegate placeholder resolution to ScratchPadMemory."""
-        logger.debug(f"Resolving placeholders in: {obj}")
-        try:
-            result = self.memory.resolve_placeholders(obj)
-
-            # --- sanitize any strings that still include markdown code fences ---
-            sanitized = cleanse(result)
-            logger.debug(f"Placeholder resolution result: {sanitized}")
-            return sanitized
-        except KeyError as e:
-            logger.warning(f"Memory placeholder resolution failed: {e}")
-            logger.warning(
-                "Continuing with unresolved placeholders - this may cause tool execution to fail"
-            )
-            # Return the original object with unresolved placeholders
-            return obj

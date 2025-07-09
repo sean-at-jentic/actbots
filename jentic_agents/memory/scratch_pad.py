@@ -9,7 +9,10 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 from .base_memory import BaseMemory
+from ..utils.parsing_helpers import cleanse
+from ..utils.logger import get_logger
 
+logger = get_logger(__name__)
 
 @dataclass
 class MemoryItem:
@@ -34,6 +37,7 @@ class ScratchPadMemory(BaseMemory):
     Supports both simple key-value storage and enhanced memory items with
     descriptions, types, and placeholder resolution.
     """
+    _MEMORY_RE = re.compile(r"\\$\\{(?:\\{)?memory\\.([\\w\\._\\[\\]]+)(?:\\})?\\}")
 
     def __init__(self):
         """Initialize empty scratch pad memory."""
@@ -166,19 +170,80 @@ class ScratchPadMemory(BaseMemory):
         """
         Generate a formatted string listing all memory items for LLM prompts.
 
-        Returns:
-            Formatted string describing all stored memory items
+        Each line now includes a short (<=200-character) JSON/text preview of the
+        stored value so the model can actually use the data, not just the key.
         """
         if not self._store:
             return "(memory empty)"
         lines = ["Available memory:"]
         for item in self._store.values():
-            lines.append(item.as_prompt_line())
+            # Build a compact preview of the value
+            val = item.value
+            try:
+                preview = json.dumps(val, ensure_ascii=False)
+            except (TypeError, ValueError):
+                preview = str(val)
+            if len(preview) > 200:
+                preview = preview[:200] + "…"
+            part_type = f" ({item.type})" if item.type else ""
+            lines.append(f"• {item.key}{part_type} – {preview}  // {item.description}")
         return "\n".join(lines)
 
-    # ---------- Placeholder resolution ----------
+    def can_resolve(self, dotted_path: str) -> bool:
+        """
+        Check if a dotted path can be resolved without raising an error.
+        Args:
+            dotted_path: Path like "key.subkey.index"
+        Returns:
+            True if the path can be resolved, False otherwise.
+        """
+        try:
+            # We don't need the result, just to see if _lookup raises an exception.
+            self._lookup(dotted_path)
+            return True
+        except (KeyError, IndexError):
+            return False
 
-    _MEMORY_RE = re.compile(r"\$\{(?:\{)?memory\.([\w_\.]+)(?:\})?\}")
+    def validate_placeholders(self, args: Dict[str, Any], required_fields: list) -> tuple[Optional[str], Optional[str]]:
+        """
+        Validates placeholders in a dictionary of arguments.
+        Returns a tuple of (error_message, correction_prompt).
+        """
+        error_summary = []
+        is_unrecoverable = False
+
+        for param, value in args.items():
+            if isinstance(value, str):
+                for match in self._MEMORY_RE.finditer(value):
+                    path = match.group(1)
+                    if not self.can_resolve(path):
+                        error_summary.append(f"param '{param}' references invalid memory path '${{memory.{path}}}'")
+                        if param in required_fields:
+                            is_unrecoverable = True
+        
+        if not error_summary:
+            return None, None
+
+        full_error = f"Placeholder validation failed: {', '.join(error_summary)}."
+        if is_unrecoverable:
+            raise RuntimeError(f"A required parameter is missing from memory. {full_error}. Available keys: [{', '.join(self.keys())}].")
+
+        # Logic for generating a correction prompt
+        from ..utils.prompt_loader import load_prompt
+        logger.warning(f"Optional parameter placeholder failed. {full_error}. Attempting local correction.")
+        correction_template = load_prompt("param_correction_prompt")
+        failed_params_str = json.dumps(args, indent=2)
+        
+        if isinstance(correction_template, dict):
+            correction_template.get('context', {})['failed_parameters'] = failed_params_str
+            correction_template.get('context', {})['available_memory_keys'] = ", ".join(self.keys())
+            correction_prompt = json.dumps(correction_template, ensure_ascii=False)
+        else:
+            correction_prompt = correction_template.format(failed_params=failed_params_str, available_memory_keys=", ".join(self.keys()))
+        
+        return full_error, correction_prompt
+
+    # ---------- Placeholder resolution ----------
 
     def resolve_placeholders(self, obj: Any) -> Any:
         """
@@ -196,48 +261,56 @@ class ScratchPadMemory(BaseMemory):
             return [self.resolve_placeholders(v) for v in obj]
         if isinstance(obj, dict):
             return {k: self.resolve_placeholders(v) for k, v in obj.items()}
-        return obj
+        return cleanse(obj)
 
     # ---------- Private helpers ----------
 
     def _lookup(self, dotted_path: str) -> str:
         """
-        Look up a value using dotted path notation.
-
+        Look up a value using a path that can include dots and array indices.
         Args:
-            dotted_path: Path like "key.subkey.index"
-
+            dotted_path: Path like "key.subkey[0].field"
         Returns:
             String representation of the looked up value
         """
-        key, *path = dotted_path.split(".")
+        # Use a regex to split the path into keys and indices
+        path_parts = re.split(r'\.|\[|\]', dotted_path)
+        path_parts = [p for p in path_parts if p]  # Remove empty strings
 
-        # Try enhanced storage first, then fall back to simple storage
+        key, *path_parts = path_parts
+
+        # Get the top-level item from memory
         if key in self._store:
             item = self._store[key].value
         elif key in self._storage:
             item = self._storage[key]
         else:
-            raise KeyError(f"Memory key '{key}' not found")
+            raise KeyError(f"Memory key '{key}' not found for path '{dotted_path}'")
 
-        # Navigate the dotted path
-        for part in path:
-            if isinstance(item, dict):
-                item = item[part]
-            elif isinstance(item, (list, tuple)):
-                item = item[int(part)]
+        # Traverse the remaining path
+        current = item
+        for part in path_parts:
+            if isinstance(current, dict):
+                current = current.get(part)
+            elif isinstance(current, list):
+                try:
+                    index = int(part)
+                    if 0 <= index < len(current):
+                        current = current[index]
+                    else:
+                        current = None  # Index out of bounds
+                except (ValueError, TypeError):
+                    current = None  # Part is not a valid index
             else:
-                raise KeyError(
-                    f"Cannot navigate path '{dotted_path}' - {part} not accessible"
-                )
+                current = None  # Cannot traverse further
 
-        # Safely stringify the item
-        if isinstance(item, str):
-            return item
+            if current is None:
+                raise KeyError(f"Path '{dotted_path}' could not be resolved at part '{part}'")
 
-        # Try JSON serialization first
+        # Safely stringify the final result
+        if isinstance(current, str):
+            return current
         try:
-            return json.dumps(item)
+            return json.dumps(current)
         except (TypeError, ValueError):
-            # If JSON serialization fails, fall back to string representation
-            return str(item)
+            return str(current)
