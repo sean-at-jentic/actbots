@@ -34,22 +34,17 @@ class LoggerSingleton:
 
     def _setup_logging(self) -> None:
         """Set up logging based on the loaded configuration."""
-        if not self.config.get("enabled", True):
-            logging.disable(logging.CRITICAL)
-            return
+        # Set root logger to the most permissive level; handlers will filter.
+        logging.getLogger().setLevel(logging.DEBUG)
 
-        # Set root logger level
-        root_level = self.config.get("level", "INFO").upper()
-        logging.getLogger().setLevel(root_level)
-
-        # Clear any existing handlers
+        # Clear any existing handlers to prevent duplicates
         logging.getLogger().handlers.clear()
 
         # Console Handler
         console_cfg = self.config.get("console", {})
         if console_cfg.get("enabled", True):
             console_handler = logging.StreamHandler()
-            console_level = console_cfg.get("level", root_level).upper()
+            console_level = console_cfg.get("level", "INFO").upper()
             console_handler.setLevel(console_level)
 
             formatter_cls = (
