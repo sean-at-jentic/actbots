@@ -24,9 +24,7 @@ SETUP INSTRUCTIONS:
    monitored_channels = [987654321]   # Channel IDs to monitor
    default_channel_id = 987654321     # Default channel for responses
 
-4. Install dependencies:
-   pip install -r requirements.txt
-   For Discord mode, also install: pip install discord.py
+4. Run command `uv venv && source .venv/bin/activate && uv pip install -e .`
 
 5. Run the demo:
    - CLI mode: python main.py or python main.py --mode cli
