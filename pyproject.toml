@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "actbots"
 version = "0.1.0"
@@ -20,6 +24,10 @@ dependencies = [
     "rich>=14.0.0",
     "ruff>=0.12.2",
 ]
+
+[tool.setuptools.packages.find]
+include = ["jentic_agents*"]
+exclude = ["logs*", "docs*"]
 
 [tool.actbots]
 [tool.actbots.logging]
