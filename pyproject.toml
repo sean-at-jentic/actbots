@@ -47,7 +47,8 @@ backup_count = 5
 jentic_agents = { level = "DEBUG" }
 chromadb = { level = "WARNING" }
 httpx = { level = "WARNING" }
-litellm = { level = "WARNING" }
+LiteLLM = { level = "WARNING" }
+openai = { level = "WARNING" }
 
 [tool.actbots.llm]
 provider = "gemini"
