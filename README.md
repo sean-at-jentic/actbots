@@ -40,19 +40,15 @@ jentic_agents/
 
 ### Installation
 
+First, ensure you have `uv` installed. You can find installation instructions [here](https://github.com/astral-sh/uv).
+
 ```bash
-# Clone and set up the project
+# Clone the project
 git clone <repository-url>
 cd actbots
 
-# Install dependencies (creates isolated .venv)
-make install
-
-# Run tests
-make test
-
-# Check code quality
-make lint
+# Create the virtual environment and install dependencies
+uv venv && uv pip install -e .
 ```
 
 ### Basic Usage
@@ -154,13 +150,13 @@ The project includes comprehensive tests with >90% coverage:
 
 ```bash
 # Run all tests
-make test
+uv run pytest
 
 # Run specific test files
-pytest jentic_agents/tests/test_reasoner.py -v
+uv run pytest jentic_agents/tests/test_reasoner.py -v
 
 # Run with coverage
-pytest --cov=jentic_agents
+uv run pytest --cov=jentic_agents
 ```
 
 ## 🔧 Development
@@ -176,14 +172,14 @@ pytest --cov=jentic_agents
 ### Code Quality
 
 ```bash
-# Linting and formatting
-make lint
+# Linting
+uv run ruff check .
 
 # Type checking (strict mode)
-make lint-strict
+uv run mypy .
 
 # Auto-fix common issues
-ruff check . --fix
+uv run ruff check . --fix
 ```
 
 ### Adding New Components

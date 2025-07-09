@@ -1,13 +1,10 @@
-import os
-import json
+import tomllib
 from typing import Any, Dict
 from pathlib import Path
 
 _CONFIG_CACHE: Dict[str, Any] = {}
 
-CONFIG_FILE = os.environ.get(
-    "JENTIC_CONFIG", os.path.join(os.path.dirname(__file__), "..", "..", "config.json")
-)
+CONFIG_FILE = Path(__file__).parents[2] / "pyproject.toml"
 
 
 def _load_config() -> Dict[str, Any]:
@@ -15,10 +12,29 @@ def _load_config() -> Dict[str, Any]:
     if not _CONFIG_CACHE:
         config_path = Path(CONFIG_FILE).resolve()
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                _CONFIG_CACHE = json.load(f)
+            with open(config_path, "rb") as f:
+                full_config = tomllib.load(f)
+            config = full_config.get("tool", {}).get("actbots", {})
+
+            if "llm" in config and "provider" in config["llm"] and "model" in config["llm"]:
+                provider = config["llm"]["provider"]
+                model = config["llm"]["model"]
+                if not model.startswith(provider + "/"):
+                    config["llm"]["model"] = f"{provider}/{model}"
+
+            if (
+                "memory" in config
+                and "llm_provider" in config["memory"]
+                and "llm_model" in config["memory"]
+            ):
+                provider = config["memory"]["llm_provider"]
+                model = config["memory"]["llm_model"]
+                if not model.startswith(provider + "/"):
+                    config["memory"]["llm_model"] = f"{provider}/{model}"
+
+            _CONFIG_CACHE = config
         except Exception as e:
-            raise RuntimeError(f"Failed to load config: {e}")
+            raise RuntimeError(f"Failed to load config from pyproject.toml: {e}")
     return _CONFIG_CACHE
 
 
@@ -29,10 +45,10 @@ def get_config() -> Dict[str, Any]:
 
 def get_config_value(*keys, default=None) -> Any:
     """Get a nested config value by keys, e.g. get_config_value('llm', 'model')."""
-    cfg = _load_config()
+    config = _load_config()
     for key in keys:
-        if isinstance(cfg, dict) and key in cfg:
-            cfg = cfg[key]
+        if isinstance(config, dict) and key in config:
+            config = config[key]
         else:
             return default
-    return cfg
+    return config

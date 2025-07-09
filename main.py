@@ -28,15 +28,10 @@ SETUP INSTRUCTIONS:
 """
 
 import argparse
-import logging
 import os
 import sys
-
 from dotenv import load_dotenv
-
-# Add the package to the path
-sys.path.insert(0, os.path.dirname(__file__))
-
+from jentic_agents.utils.logger import get_logger
 from jentic_agents.agents.interactive_cli_agent import InteractiveCLIAgent
 from jentic_agents.agents.simple_ui_agent import SimpleUIAgent
 from jentic_agents.communication import CLIController
@@ -44,13 +39,10 @@ from jentic_agents.memory.scratch_pad import ScratchPadMemory
 from jentic_agents.communication.inbox.cli_inbox import CLIInbox
 from jentic_agents.platform.jentic_client import JenticClient
 from jentic_agents.reasoners.bullet_list_reasoner import BulletPlanReasoner
-
 from jentic_agents.utils.llm import LiteLLMChatLLM
 from jentic_agents.utils.config import get_config_value
 
-logging.getLogger("litellm").setLevel(logging.WARNING)
-logging.getLogger("LiteLLM").setLevel(logging.WARNING)
-
+get_logger(__name__)
 
 def main():
 
@@ -64,11 +56,6 @@ def main():
     args = parser.parse_args()
 
     load_dotenv()
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-    )
-    logging.getLogger("openai").setLevel(logging.WARNING)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
 
     mode_name = "CLI" if args.mode == "cli" else "UI"
     print(f"Starting ActBots ({mode_name} Mode)")
