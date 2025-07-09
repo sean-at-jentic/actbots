@@ -52,3 +52,9 @@ def get_config_value(*keys, default=None) -> Any:
         else:
             return default
     return config
+
+
+def get_discord_config() -> Dict[str, Any]:
+    """Return the discord config as a dict."""
+    config = _load_config()
+    return config.get("discord", {})

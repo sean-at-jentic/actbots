@@ -37,7 +37,7 @@ class ScratchPadMemory(BaseMemory):
     Supports both simple key-value storage and enhanced memory items with
     descriptions, types, and placeholder resolution.
     """
-    _MEMORY_RE = re.compile(r"\\$\\{memory\\.([\\w._\\[\\]]+)\\}")
+    _MEMORY_RE = re.compile(r"\\$\\{(?:\\{)?memory\\.([\\w\\._\\[\\]]+)(?:\\})?\\}")
 
     def __init__(self):
         """Initialize empty scratch pad memory."""
@@ -256,10 +256,7 @@ class ScratchPadMemory(BaseMemory):
             Object with placeholders resolved to actual memory values
         """
         if isinstance(obj, str):
-            # Simple direct replacement for ${memory.key} pattern
-            import re
-            pattern = re.compile(r'\$\{memory\.([a-zA-Z0-9_]+)\}')
-            return pattern.sub(lambda m: self._lookup(m.group(1)), obj)
+            return self._MEMORY_RE.sub(lambda m: self._lookup(m.group(1)), obj)
         if isinstance(obj, list):
             return [self.resolve_placeholders(v) for v in obj]
         if isinstance(obj, dict):

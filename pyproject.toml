@@ -6,7 +6,8 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "chromadb>=1.0.15",
-    "google-genai>=1.24.0",
+    "discord-py>=2.5.2",
+    "dotenv>=0.9.9",
     "jentic>=0.8.1",
     "litellm>=1.0.0",
     "mem0ai>=0.1.114",
@@ -56,3 +57,16 @@ chroma_path = "jentic_agents/data/chroma_db"
 llm_provider = "gemini"
 llm_model = "gemini-2.5-flash"
 embed_model = "text-embedding-3-small"
+
+[tool.actbots.discord]
+enabled = true
+token = ""
+target_user_id = 1343280955263160424
+monitored_channels = [1391788053424509028]
+default_channel_id = 1391788053424509028
+escalation_channel_id = 1391788053424509028
+command_prefix = "!"
+use_embeds = true
+auto_react = true
+verbose = true
+escalation_timeout = 300

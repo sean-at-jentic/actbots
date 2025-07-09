@@ -57,4 +57,3 @@ jentic_agents/data
 *.log
 tasks/
 .cursor/rules/
-.venv/

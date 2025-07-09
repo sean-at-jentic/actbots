@@ -29,3 +29,4 @@ def load_prompt(prompt_name: str) -> Any:
     except FileNotFoundError:
         logger.error(f"Prompt file not found: {prompt_path}")
         raise RuntimeError(f"Prompt file not found: {prompt_path}") 
+    
