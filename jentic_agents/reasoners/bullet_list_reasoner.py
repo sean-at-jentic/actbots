@@ -38,7 +38,6 @@ import json
 import re
 from collections import deque
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # local utils
@@ -554,25 +553,9 @@ class BulletPlanReasoner(BaseReasoner):
             hit_type = hit.get("type", "") if isinstance(hit, dict) else getattr(hit, "type", "")
             return hit_type == "operation"
 
-        def is_simple_task(hit):
-            """Prefer direct message operations over webhook creation"""
-            description = (hit.get("description", "") if isinstance(hit, dict) 
-                         else getattr(hit, "description", "")).lower()
-            name = (hit.get("name", "") if isinstance(hit, dict) 
-                   else getattr(hit, "name", "")).lower()
-            
-            # Prefer direct message operations
-            if any(word in description or word in name for word in ["send message", "post message", "create message"]):
-                return True
-            # Deprioritize webhook creation
-            if any(word in description or word in name for word in ["webhook", "create-channel-webhook"]):
-                return False
-            return True
-
         search_hits = sorted(search_hits, key=lambda h: (
             not provider_mentioned(h),    # Provider match first
-            not is_operation(h),          # Operations before workflows  
-            not is_simple_task(h)         # Simple tasks before complex
+            not is_operation(h)           # Operations before workflows
         ))
 
         # Log top tool candidates for LLM selection (reduced verbosity)
@@ -589,8 +572,8 @@ class BulletPlanReasoner(BaseReasoner):
             logger.warning(f"LLM tool selection failed: {e}")
 
         # If initial search didn't yield good results, get more results with same query
-        if len(search_hits) < 8 or not any(self._is_relevant_tool(hit, plan_step) for hit in search_hits[:8]):
-            logger.info("Initial search didn't find enough relevant results, getting more results with same query...")
+        if len(search_hits) < 8:
+            logger.info("Initial search returned few results, getting more results with same query...")
             
             # Search for more results with the same query (total of 16)
             extended_hits = self.jentic.search(search_query, top_k=16)
@@ -598,8 +581,7 @@ class BulletPlanReasoner(BaseReasoner):
                 # Sort all extended results with same criteria
                 search_hits = sorted(extended_hits, key=lambda h: (
                     not provider_mentioned(h),
-                    not is_operation(h),
-                    not is_simple_task(h)
+                    not is_operation(h)
                 ))
                 
                 logger.info(f"Extended search results ({len(search_hits)} tools):")
@@ -610,24 +592,9 @@ class BulletPlanReasoner(BaseReasoner):
                 
                 return self._select_tool_with_llm(plan_step, search_hits, state)
 
-        # Final fallback to first hit
-        logger.warning("Using first available tool as final fallback")
-        return search_hits[0]["id"] if search_hits else None
-
-    def _is_relevant_tool(self, tool, step):
-        """Check if a tool is relevant to the step based on keywords and context"""
-        step_lower = step.text.lower()
-        tool_desc = (tool.get("description", "") if isinstance(tool, dict) 
-                    else getattr(tool, "description", "")).lower()
-        tool_name = (tool.get("name", "") if isinstance(tool, dict) 
-                    else getattr(tool, "name", "")).lower()
-        
-        # Extract key action words from step
-        action_words = ["send", "get", "create", "update", "delete", "fetch", "post", "retrieve"]
-        step_actions = [word for word in action_words if word in step_lower]
-        
-        # Check if any action words appear in tool description/name
-        return any(action in tool_desc or action in tool_name for action in step_actions)
+        # No fallback - raise error if tool selection fails
+        logger.error("Tool selection failed - no suitable tool found")
+        raise RuntimeError(f"No suitable tool found for step: {plan_step.text}")
 
     # 3. ACT ------------------------------------------------------------
     def act(self, tool_id: str, state: ReasonerState, current_step: Step):
@@ -672,7 +639,6 @@ class BulletPlanReasoner(BaseReasoner):
 
     def _prepare_param_generation_prompt(self, tool_id: str, tool_info: Dict, state: ReasonerState) -> str:
         """Loads and formats the prompt for generating tool parameters."""
-        required_fields = tool_info.get("required", [])
         memory_enum = self.memory.enumerate_for_prompt()
         available_memory_keys = list(self.memory.keys())
         allowed_memory_keys_str = ", ".join(available_memory_keys) if available_memory_keys else "(none)"
