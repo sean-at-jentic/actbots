@@ -346,6 +346,68 @@ class BulletPlanReasoner(BaseReasoner):
         logger.warning("LLM did not provide a valid tool selection")
         return None
 
+    def _escalate_tool_selection(self, plan_step: Step, search_hits: List[Dict[str, Any]]) -> str:
+        """Escalate tool selection to human when LLM fails."""
+        if not self.escalation.is_available():
+            raise RuntimeError(f"Tool selection failed for step: {plan_step.text}. No human help available.")
+        
+        # Format tool options for human
+        tool_list = []
+        for i, tool in enumerate(search_hits[:8], 1):  # Show max 8 tools
+            name = tool.get("name", "Unknown")
+            api_name = tool.get("api_name", "")
+            desc = tool.get("description", "")[:60]  # Truncate description
+            display = f"{name} ({api_name})" if api_name else name
+            tool_list.append(f"{i}. {display} - {desc}")
+        
+        tool_options = "\n".join(tool_list)
+        question = f"Tool selection failed for: '{plan_step.text}'\n\nAvailable tools:\n{tool_options}\n\nPlease enter tool number (1-{len(tool_list)}) or tool name:"
+        
+        try:
+            human_response = self.escalation.ask_human(
+                question="Which tool should I use?",
+                context=question
+            )
+            
+            return self._parse_human_tool_choice(human_response.strip(), search_hits[:8])
+            
+        except Exception as e:
+            raise RuntimeError(f"Human tool selection failed: {e}")
+
+    def _parse_human_tool_choice(self, response: str, available_tools: List[Dict[str, Any]]) -> str:
+        """Parse human response and return tool ID."""
+        response = response.strip().lower()
+        
+        # Try numeric selection (1-based)
+        if response.isdigit():
+            idx = int(response) - 1
+            if 0 <= idx < len(available_tools):
+                tool = available_tools[idx]
+                tool_id = tool["id"]
+                tool_name = tool.get("name", "Unknown")
+                logger.info(f"Human selected tool #{idx+1}: {tool_id} ({tool_name})")
+                return tool_id
+        
+        # Try exact tool name match
+        for tool in available_tools:
+            tool_name = tool.get("name", "").lower()
+            if tool_name == response:
+                tool_id = tool["id"]
+                logger.info(f"Human selected tool by name: {tool_id} ({tool_name})")
+                return tool_id
+        
+        # Try partial name match
+        for tool in available_tools:
+            tool_name = tool.get("name", "").lower()
+            if response in tool_name:
+                tool_id = tool["id"]
+                logger.info(f"Human selected tool by partial match: {tool_id} ({tool_name})")
+                return tool_id
+        
+        # No match found
+        available_names = [tool.get("name", "Unknown") for tool in available_tools]
+        raise ValueError(f"Could not find tool matching '{response}'. Available: {', '.join(available_names)}")
+
     def __init__(
         self,
         jentic: JenticClient,
@@ -521,7 +583,7 @@ class BulletPlanReasoner(BaseReasoner):
         # Search using JENTIC
         search_query = self._build_search_query(plan_step, state)
         logger.info(f"Search query: {search_query}")
-        search_hits = self.jentic.search(search_query, top_k=self.search_top_k)
+        search_hits = self.jentic.search(search_query, top_k=8)  # Start with 8 tools for LLM
 
         if not search_hits:
             logger.error(f"No tools found for query: '{search_query}'")
@@ -551,12 +613,12 @@ class BulletPlanReasoner(BaseReasoner):
             not is_operation(h)           # Operations before workflows
         ))
 
-        # Log top tool candidates for LLM selection (reduced verbosity)
-        logger.info(f"Top candidates ({len(search_hits)} total): " + 
+        # Log top tool candidates for LLM selection
+        logger.info(f"Top 8 candidates: " + 
                    ", ".join([f"{i+1}. {hit.get('type', 'unknown')}:{hit.get('name', 'Unknown')[:20]}" 
-                            for i, hit in enumerate(search_hits[:8])]))
+                            for i, hit in enumerate(search_hits)]))
 
-        # Try LLM selection with initial results
+        # Try LLM selection with initial 8 results
         selected_tool_id = self._select_tool_with_llm(plan_step, search_hits, state)
         if selected_tool_id:
             return selected_tool_id
@@ -564,32 +626,31 @@ class BulletPlanReasoner(BaseReasoner):
         logger.info("Initial LLM selection failed, trying extended search...")
 
         # If initial search didn't work, get more results with same query
-        if len(search_hits) < 16:  # Only extend if we haven't already got max results
-            logger.info("Getting more search results...")
+        logger.info("Getting more search results...")
+        
+        # Search for more results with the same query (up to 15 total)
+        extended_hits = self.jentic.search(search_query, top_k=15)
+        if extended_hits and len(extended_hits) > len(search_hits):
+            # Sort all extended results with same criteria
+            search_hits = sorted(extended_hits, key=lambda h: (
+                not provider_mentioned(h),
+                not is_operation(h)
+            ))
             
-            # Search for more results with the same query (total of 16)
-            extended_hits = self.jentic.search(search_query, top_k=16)
-            if extended_hits and len(extended_hits) > len(search_hits):
-                # Sort all extended results with same criteria
-                search_hits = sorted(extended_hits, key=lambda h: (
-                    not provider_mentioned(h),
-                    not is_operation(h)
-                ))
-                
-                logger.info(f"Extended search results ({len(search_hits)} tools):")
-                for i, hit in enumerate(search_hits[:5]):
-                    hit_type = hit.get("type", "unknown") if isinstance(hit, dict) else getattr(hit, "type", "unknown")
-                    name = hit.get("name", "Unknown") if isinstance(hit, dict) else getattr(hit, "name", "Unknown") 
-                    logger.info(f"  {i+1}. [{hit_type}] {name}")
-                
-                # Try LLM selection again with extended results
-                selected_tool_id = self._select_tool_with_llm(plan_step, search_hits, state)
-                if selected_tool_id:
-                    return selected_tool_id
+            logger.info(f"Extended search results ({len(search_hits)} tools):")
+            for i, hit in enumerate(search_hits[:5]):
+                hit_type = hit.get("type", "unknown") if isinstance(hit, dict) else getattr(hit, "type", "unknown")
+                name = hit.get("name", "Unknown") if isinstance(hit, dict) else getattr(hit, "name", "Unknown") 
+                logger.info(f"  {i+1}. [{hit_type}] {name}")
+            
+            # Try LLM selection again with extended results  
+            selected_tool_id = self._select_tool_with_llm(plan_step, search_hits, state)
+            if selected_tool_id:
+                return selected_tool_id
 
-        # All selection attempts failed - raise error
-        logger.error("Tool selection failed after all attempts")
-        raise RuntimeError(f"No suitable tool found for step: {plan_step.text}. LLM could not select from {len(search_hits)} available tools.")
+        # All selection attempts failed - try human escalation
+        logger.warning("LLM tool selection failed, escalating to human")
+        return self._escalate_tool_selection(plan_step, search_hits)
 
     # 3. ACT ------------------------------------------------------------
     def act(self, tool_id: str, state: ReasonerState, current_step: Step):
