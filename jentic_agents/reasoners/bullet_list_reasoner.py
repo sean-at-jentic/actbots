@@ -342,16 +342,9 @@ class BulletPlanReasoner(BaseReasoner):
                 logger.info(f"LLM selected tool by provider: {tool_id} ({step.tool_name})")
                 return tool_id
 
-        # 4️⃣ Fallback first hit
-        first = hits[0]
-        step.tool_name = (
-            first.get("name", None)
-            if isinstance(first, dict)
-            else getattr(first, "name", None)
-        )
-        tool_id = first["id"] if isinstance(first, dict) else getattr(first, "id", "unknown")
-        logger.info(f"LLM fallback to first tool: {tool_id} ({step.tool_name})")
-        return tool_id
+        # 4️⃣ No fallback - return None to indicate failure
+        logger.warning("LLM did not provide a valid tool selection")
+        return None
 
     def __init__(
         self,
@@ -563,17 +556,16 @@ class BulletPlanReasoner(BaseReasoner):
                    ", ".join([f"{i+1}. {hit.get('type', 'unknown')}:{hit.get('name', 'Unknown')[:20]}" 
                             for i, hit in enumerate(search_hits[:8])]))
 
-        # Try LLM selection first with initial results
-        try:
-            selected_tool_id = self._select_tool_with_llm(plan_step, search_hits, state)
-            if selected_tool_id:
-                return selected_tool_id
-        except Exception as e:
-            logger.warning(f"LLM tool selection failed: {e}")
+        # Try LLM selection with initial results
+        selected_tool_id = self._select_tool_with_llm(plan_step, search_hits, state)
+        if selected_tool_id:
+            return selected_tool_id
+        
+        logger.info("Initial LLM selection failed, trying extended search...")
 
-        # If initial search didn't yield good results, get more results with same query
-        if len(search_hits) < 8:
-            logger.info("Initial search returned few results, getting more results with same query...")
+        # If initial search didn't work, get more results with same query
+        if len(search_hits) < 16:  # Only extend if we haven't already got max results
+            logger.info("Getting more search results...")
             
             # Search for more results with the same query (total of 16)
             extended_hits = self.jentic.search(search_query, top_k=16)
@@ -590,11 +582,14 @@ class BulletPlanReasoner(BaseReasoner):
                     name = hit.get("name", "Unknown") if isinstance(hit, dict) else getattr(hit, "name", "Unknown") 
                     logger.info(f"  {i+1}. [{hit_type}] {name}")
                 
-                return self._select_tool_with_llm(plan_step, search_hits, state)
+                # Try LLM selection again with extended results
+                selected_tool_id = self._select_tool_with_llm(plan_step, search_hits, state)
+                if selected_tool_id:
+                    return selected_tool_id
 
-        # No fallback - raise error if tool selection fails
-        logger.error("Tool selection failed - no suitable tool found")
-        raise RuntimeError(f"No suitable tool found for step: {plan_step.text}")
+        # All selection attempts failed - raise error
+        logger.error("Tool selection failed after all attempts")
+        raise RuntimeError(f"No suitable tool found for step: {plan_step.text}. LLM could not select from {len(search_hits)} available tools.")
 
     # 3. ACT ------------------------------------------------------------
     def act(self, tool_id: str, state: ReasonerState, current_step: Step):
