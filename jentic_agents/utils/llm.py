@@ -29,7 +29,7 @@ class LiteLLMChatLLM(BaseLLM):
         import litellm
 
         if model is None:
-            model = get_config_value("llm", "model", default="gpt-4o")
+            model = get_config_value("llm", "model", default="gemini/gemini-2.5-flash")
 
         self.model = model
         self.temperature = temperature
