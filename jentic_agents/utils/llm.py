@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import List, Dict
+import os, json
+import asyncio
+import concurrent.futures
 from .config import get_config_value
 
 
@@ -17,6 +20,12 @@ class BaseLLM(ABC):
 
     @abstractmethod
     def chat(self, messages: List[Dict[str, str]], **kwargs) -> str: ...
+    
+    async def chat_async(self, messages: List[Dict[str, str]], **kwargs) -> str:
+        """Async version of chat that runs sync method in thread pool."""
+        loop = asyncio.get_event_loop()
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            return await loop.run_in_executor(executor, self.chat, messages, **kwargs)
 
 
 class LiteLLMChatLLM(BaseLLM):
@@ -29,7 +38,7 @@ class LiteLLMChatLLM(BaseLLM):
         import litellm
 
         if model is None:
-            model = get_config_value("llm", "model", default="gemini/gemini-2.5-flash")
+            model = get_config_value("llm", "model", default="gpt-4o")
 
         self.model = model
         self.temperature = temperature

@@ -83,10 +83,77 @@ class JenticClient:
 
         self._sync = _sync
 
+    def _is_async_context(self) -> bool:
+        """Check if we're running in an async context."""
+        try:
+            import asyncio
+            loop = asyncio.get_running_loop()
+            is_async = loop.is_running()
+            logger.debug(f"_is_async_context check: {is_async}, loop: {loop}")
+            return is_async
+        except RuntimeError as e:
+            logger.debug(f"_is_async_context check: False, RuntimeError: {e}")
+            return False
+
+    async def search_async(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        """
+        Async version of search for use in async contexts.
+        """
+        logger.info(f"Searching for tools: '{query}' (top {top_k})")
+
+        # Build request model for the SDK.
+        RequestModel = getattr(self._sdk_models, "ApiCapabilitySearchRequest")
+        search_request = RequestModel(capability_description=query, max_results=top_k)
+
+        # Call the async SDK directly.
+        results = await self._sdk_client.search_api_capabilities(search_request)
+
+        # Pydantic model ➔ dict
+        if hasattr(results, "model_dump"):
+            results_dict = results.model_dump(exclude_none=False)
+        else:
+            # Fallback for non-Pydantic objects.
+            results_dict = dict(results)
+
+        return self._format_and_cache_search_results(results_dict, top_k)
+
     def search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """
         Search for workflows and operations matching a query. Caches metadata for later use.
         """
+        # Check if we're in an async context and use async method if so
+        if self._is_async_context():
+            logger.info(f"Detected async context, using ThreadPoolExecutor for search: {query}")
+            import asyncio
+            import concurrent.futures
+            
+            try:
+                # Create a new thread to run the async operation
+                def run_async():
+                    logger.info(f"Running search_async in new thread for: {query}")
+                    # Create a new event loop in this thread
+                    new_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(new_loop)
+                    try:
+                        result = new_loop.run_until_complete(self.search_async(query, top_k))
+                        logger.info(f"ThreadPoolExecutor search completed successfully for: {query}")
+                        return result
+                    except Exception as e:
+                        logger.error(f"ThreadPoolExecutor search failed for {query}: {e}")
+                        raise
+                    finally:
+                        new_loop.close()
+                
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(run_async)
+                    result = future.result()
+                    logger.info(f"ThreadPoolExecutor returned result for {query}: {len(result)} items")
+                    return result
+            except Exception as e:
+                logger.error(f"ThreadPoolExecutor approach failed for {query}: {e}, falling back to sync")
+                # Don't fall back to sync - re-raise the exception
+                raise RuntimeError(f"Async context detected but ThreadPoolExecutor failed: {e}") from e
+        
         logger.info(f"Searching for tools: '{query}' (top {top_k})")
 
         # Build request model for the SDK.
@@ -136,11 +203,67 @@ class JenticClient:
 
         return formatted_results[:top_k]
 
+    async def load_async(self, tool_id: str) -> Dict[str, Any]:
+        """
+        Async version of load for use in async contexts.
+        """
+        logger.info(f"Loading tool definition for: {tool_id}")
+
+        tool_meta = self._tool_metadata_cache.get(tool_id)
+        if not tool_meta:
+            raise ValueError(f"Tool '{tool_id}' not found in cache. Must be discovered via search() first.")
+
+        # Prepare and execute load request via SDK
+        results = await self._sdk_client.load_execution_info(
+            workflow_uuids=[tool_id] if tool_meta["type"] == "workflow" else [],
+            operation_uuids=[tool_id] if tool_meta["type"] == "operation" else [],
+            api_name=tool_meta["api_name"],
+        )
+
+        # Convert Pydantic → dict for downstream processing.
+        if hasattr(results, "model_dump"):
+            results = results.model_dump(exclude_none=False)
+
+        return self._format_load_results(tool_id, results)
+
     def load(self, tool_id: str) -> Dict[str, Any]:
         """
         Load the detailed definition for a specific tool by its ID.
         Uses cached metadata to determine if it's a workflow or operation.
         """
+        # Check if we're in an async context and use async method if so
+        if self._is_async_context():
+            logger.info(f"Detected async context, using ThreadPoolExecutor for load: {tool_id}")
+            import concurrent.futures
+            
+            try:
+                # Create a new thread to run the async operation
+                def run_async():
+                    logger.info(f"Running load_async in new thread for: {tool_id}")
+                    # Create a new event loop in this thread
+                    import asyncio
+                    new_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(new_loop)
+                    try:
+                        result = new_loop.run_until_complete(self.load_async(tool_id))
+                        logger.info(f"ThreadPoolExecutor load completed successfully for: {tool_id}")
+                        return result
+                    except Exception as e:
+                        logger.error(f"ThreadPoolExecutor load failed for {tool_id}: {e}")
+                        raise
+                    finally:
+                        new_loop.close()
+                
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(run_async)
+                    result = future.result()
+                    logger.info(f"ThreadPoolExecutor returned load result for {tool_id}")
+                    return result
+            except Exception as e:
+                logger.error(f"ThreadPoolExecutor approach failed for load {tool_id}: {e}")
+                # Don't fall back to sync - re-raise the exception
+                raise RuntimeError(f"Async context detected but ThreadPoolExecutor failed: {e}") from e
+        
         logger.info(f"Loading tool definition for: {tool_id}")
 
         tool_meta = self._tool_metadata_cache.get(tool_id)
@@ -206,10 +329,65 @@ class JenticClient:
             "The tool was not found in the payload returned by the Jentic API."
         )
 
+    async def execute_async(self, tool_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Async version of execute for use in async contexts.
+        """
+        logger.info(f"Executing tool: {tool_id}")
+        
+        tool_meta = self._tool_metadata_cache.get(tool_id)
+        if not tool_meta:
+            raise ValueError(f"Tool '{tool_id}' not found in cache. Must be discovered via search() first.")
+        
+        try:
+            if tool_meta["type"] == "workflow":
+                result = await self._sdk_client.execute_workflow(tool_id, params)
+            else:
+                result = await self._sdk_client.execute_operation(tool_id, params)
+
+            return {"status": "success", "result": result}
+
+        except Exception as exc:
+            logger.error("Jentic execution failed for tool '%s': %s", tool_id, exc)
+            raise
+
     def execute(self, tool_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """
         Execute a tool with given parameters. Uses cached metadata to determine execution type.
         """
+        # Check if we're in an async context and use async method if so
+        if self._is_async_context():
+            logger.info(f"Detected async context, using ThreadPoolExecutor for execute: {tool_id}")
+            import concurrent.futures
+            
+            try:
+                # Create a new thread to run the async operation
+                def run_async():
+                    logger.info(f"Running execute_async in new thread for: {tool_id}")
+                    # Create a new event loop in this thread
+                    import asyncio
+                    new_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(new_loop)
+                    try:
+                        result = new_loop.run_until_complete(self.execute_async(tool_id, params))
+                        logger.info(f"ThreadPoolExecutor execute completed successfully for: {tool_id}")
+                        return result
+                    except Exception as e:
+                        logger.error(f"ThreadPoolExecutor execute failed for {tool_id}: {e}")
+                        raise
+                    finally:
+                        new_loop.close()
+                
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(run_async)
+                    result = future.result()
+                    logger.info(f"ThreadPoolExecutor returned execute result for {tool_id}")
+                    return result
+            except Exception as e:
+                logger.error(f"ThreadPoolExecutor approach failed for execute {tool_id}: {e}")
+                # Don't fall back to sync - re-raise the exception
+                raise RuntimeError(f"Async context detected but ThreadPoolExecutor failed: {e}") from e
+        
         logger.info(f"Executing tool: {tool_id}")
 
         tool_meta = self._tool_metadata_cache.get(tool_id)

@@ -100,5 +100,5 @@ def safe_json_loads(text: str) -> Dict[str, Any]:
         logger.error(f"Failed to parse JSON: {e}")
         raise ValueError(f"Failed to parse JSON: {e}\n{text}")
 
-
 __all__.extend(["extract_fenced_code", "safe_json_loads"])
+
