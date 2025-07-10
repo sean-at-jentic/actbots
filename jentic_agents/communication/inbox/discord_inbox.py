@@ -3,7 +3,7 @@ Discord-based inbox that reads goals from Discord messages.
 """
 import asyncio
 import logging
-from typing import Optional, Dict, List, Callable, Any, Union
+from typing import Optional, Dict, List, Callable, Union
 from queue import Queue, Empty
 import discord
 from discord.ext import commands

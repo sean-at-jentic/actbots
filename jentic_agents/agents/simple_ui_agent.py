@@ -786,3 +786,9 @@ The AI assistant can help with research, planning, coding questions, and much mo
                 self.root.destroy()
             except tk.TclError:
                 pass  # Window already closed
+
+    def run_agent(self, bot=None, discord_token=None, controller=None):
+        """
+        Main entry point for running the agent in UI mode.
+        """
+        self.spin()
