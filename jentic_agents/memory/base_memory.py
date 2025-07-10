@@ -3,7 +3,7 @@ Abstract base class for memory backends that store and retrieve information.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 
 class BaseMemory(ABC):
