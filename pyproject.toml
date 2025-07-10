@@ -68,7 +68,6 @@ embed_model = "text-embedding-3-small"
 
 [tool.actbots.discord]
 enabled = true
-token = ""
 target_user_id = 1343280955263160424
 monitored_channels = [1391788053424509028]
 default_channel_id = 1391788053424509028

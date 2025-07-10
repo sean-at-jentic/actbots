@@ -24,7 +24,9 @@ from ..utils.llm import BaseLLM, LiteLLMChatLLM
 from ..memory.scratch_pad import ScratchPadMemory
 from ..utils.logger import get_logger
 from ..communication.hitl.base_intervention_hub import BaseInterventionHub, NoEscalation
+from ..utils.config import get_config
 
+config = get_config()
 logger = get_logger(__name__)
 
 # Safety limits
@@ -54,7 +56,7 @@ class FreeformReasoner(BaseReasoner):
         jentic: JenticClient,
         memory: ScratchPadMemory,
         llm: Optional[BaseLLM] = None,
-        model: str = "gpt-4o",
+        model: Optional[str] = None,
         max_iterations: int = MAX_ITERATIONS,
         include_tool_catalogue: bool = True,
         intervention_hub: Optional[BaseInterventionHub] = None,
@@ -71,15 +73,16 @@ class FreeformReasoner(BaseReasoner):
             intervention_hub: Human intervention hub for escalations
         """
         super().__init__()
+        primary_model = model or config.get("llm", {}).get("model", "gpt-4o")
         self.jentic = jentic
         self.memory = memory
-        self.llm = llm or LiteLLMChatLLM(model=model)
+        self.llm = llm or LiteLLMChatLLM(model=primary_model)
         self.max_iterations = max_iterations
         self.include_tool_catalogue = include_tool_catalogue
         self.intervention_hub = intervention_hub or NoEscalation()
 
         logger.info(
-            f"Initialized FreeformReasoner with model={model}, max_iterations={max_iterations}"
+            f"Initialized FreeformReasoner with model={primary_model}, max_iterations={max_iterations}"
         )
 
     def run(self, goal: str, max_iterations: Optional[int] = None) -> ReasoningResult:
@@ -101,23 +104,24 @@ class FreeformReasoner(BaseReasoner):
                 response = self._get_llm_response(state)
                 logger.info(f"LLM response: {response[:200]}...")
 
-                # Check for completion signals
-                if self._check_completion(response, state):
-                    logger.info("Completion detected!")
-                    break
-
-                # Extract and execute any tool calls
-                tool_results = self._execute_embedded_tools(response, state)
-
-                # Add LLM response to conversation
+                # Add LLM's response to the history BEFORE processing it.
+                # This ensures that even if the loop breaks, we have the full context.
                 state.messages.append({"role": "assistant", "content": response})
 
-                # Add tool results to conversation if any
+                # ALWAYS process tools first. The LLM might say it's done *after* calling a tool.
+                tool_results = self._execute_embedded_tools(response, state)
+
+                # Add tool results to conversation if any were executed
                 if tool_results:
                     results_text = self._format_tool_results(tool_results)
                     state.messages.append(
                         {"role": "user", "content": f"Tool results:\n{results_text}"}
                     )
+
+                # NOW, check for completion signals. This prevents premature exit.
+                if self._check_completion(response, state):
+                    logger.info("Completion detected!")
+                    break
 
                 state.iteration_count += 1
 
@@ -133,8 +137,8 @@ class FreeformReasoner(BaseReasoner):
         """Set up the initial conversation context."""
         logger.info("Initializing conversation context")
 
-        # Build system prompt
-        system_prompt = self._build_system_prompt()
+        # Build system prompt, passing the state to provide goal context for tool search
+        system_prompt = self._build_system_prompt(state)
         state.messages.append({"role": "system", "content": system_prompt})
 
         # Add goal as first user message
@@ -152,7 +156,7 @@ Begin working on this goal now."""
         state.messages.append({"role": "user", "content": goal_prompt})
         logger.info("Conversation initialized")
 
-    def _build_system_prompt(self) -> str:
+    def _build_system_prompt(self, state: ConversationState) -> str:
         """Create the system prompt with tool catalogue and instructions."""
         logger.info("Building system prompt")
 
@@ -198,7 +202,7 @@ IMPORTANT:
 
         # Add tool catalogue if requested
         if self.include_tool_catalogue:
-            tool_catalogue = self._get_tool_catalogue()
+            tool_catalogue = self._get_tool_catalogue(state.goal)
             if tool_catalogue:
                 base_prompt += f"\n\nAVAILABLE TOOLS:\n{tool_catalogue}"
 
@@ -209,18 +213,22 @@ IMPORTANT:
 
         return base_prompt
 
-    def _get_tool_catalogue(self) -> str:
-        """Get a formatted catalogue of available tools."""
-        logger.info("Fetching tool catalogue")
+    def _get_tool_catalogue(self, goal: str) -> str:
+        """Get a formatted catalogue of available tools based on the goal."""
+        logger.info(f"Fetching tool catalogue for goal: '{goal}'")
         try:
-            # Search for all tools with a broad query
-            tools = self.jentic.search("", top_k=50)  # Get many tools
+            # Search for tools relevant to the current goal.
+            if not goal.strip():
+                logger.warning("Goal is empty, skipping tool catalogue search.")
+                return "No tools available. Use tool search to find tools."
+
+            tools = self.jentic.search(goal, top_k=10)
 
             if not tools:
-                return "No tools available."
+                return "No tools found for your goal. Use tool search to find other tools."
 
             catalogue_lines = []
-            for tool in tools[:20]:  # Limit to top 20 to control prompt size
+            for tool in tools:  # Already limited by search
                 if isinstance(tool, dict):
                     name = tool.get("name", tool.get("id", "Unknown"))
                     tool_id = tool.get("id", "Unknown")
@@ -286,12 +294,12 @@ IMPORTANT:
         self, messages: List[Dict[str, str]]
     ) -> List[Dict[str, str]]:
         """Manage context length by keeping system + recent messages."""
-        if len(messages) <= 10:  # Small conversation, keep all
+        if len(messages) <= 20:  # Small conversation, keep all
             return messages
 
-        # Keep system message + last 8 messages
+        # Keep system message + last 19 messages for a hard cap of 20
         system_msg = messages[0] if messages[0]["role"] == "system" else None
-        recent_messages = messages[-8:]
+        recent_messages = messages[-19:]
 
         if system_msg and recent_messages[0] != system_msg:
             return [system_msg] + recent_messages
@@ -303,16 +311,26 @@ IMPORTANT:
             r"TASK COMPLETE:",
             r"GOAL ACHIEVED:",
             r"COMPLETED:",
-            r"FINISHED:",
-            r"DONE:",
         ]
 
-        for pattern in completion_patterns:
-            if re.search(pattern, response, re.IGNORECASE):
-                logger.info(f"Completion pattern found: {pattern}")
-                state.is_complete = True
-                state.final_answer = response
-                return True
+        # Check for a completion keyword in the response.
+        has_completion_signal = any(
+            re.search(pattern, response, re.IGNORECASE)
+            for pattern in completion_patterns
+        )
+
+        if has_completion_signal:
+            # To avoid premature completion, only accept it if at least one tool has been used.
+            if not state.tool_calls:
+                logger.warning(
+                    "Completion signal found, but no tools were used. Ignoring signal to prevent premature exit."
+                )
+                return False
+
+            logger.info("Completion signal found and tools were used. Task is complete.")
+            state.is_complete = True
+            state.final_answer = response
+            return True
 
         return False
 

@@ -49,6 +49,7 @@ from jentic_agents.platform.jentic_client import JenticClient
 from jentic_agents.reasoners.bullet_list_reasoner import BulletPlanReasoner
 from jentic_agents.utils.llm import LiteLLMChatLLM
 from jentic_agents.utils.config import get_config_value
+from jentic_agents.reasoners.hybrid_reasoner import HybridReasoner
 
 # Discord imports (optional)
 try:
@@ -90,7 +91,7 @@ def create_controller(mode):
             raise ImportError("Discord mode requires 'discord.py'. Install it with: pip install discord.py")
 
         # Get Discord configuration
-        discord_token = os.getenv("DISCORD_BOT_TOKEN") or get_config_value("discord", "token")
+        discord_token = os.getenv("DISCORD_BOT_AGENT_TOKEN")
         discord_user_id = get_config_value("discord", "target_user_id")
         
         if not discord_token:
@@ -142,7 +143,7 @@ def setup_agent(mode):
     
     if mode == "ui":
         # UI mode uses SimpleUIAgent with CLI inbox
-        reasoner = BulletPlanReasoner(
+        reasoner = HybridReasoner(
             jentic=jentic_client,
             memory=memory,
             llm=llm_wrapper,
@@ -162,7 +163,7 @@ def setup_agent(mode):
     controller, bot, discord_token = create_controller(mode)
     
     # Create reasoner with intervention hub for CLI/Discord modes
-    reasoner = BulletPlanReasoner(
+    reasoner = HybridReasoner(
         jentic=jentic_client,
         memory=memory,
         llm=llm_wrapper,

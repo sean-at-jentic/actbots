@@ -55,6 +55,10 @@ from ..memory.scratch_pad import ScratchPadMemory
 from ..utils.logger import get_logger
 from .base_reasoner import StepType
 from ..communication.hitl.base_intervention_hub import BaseInterventionHub, NoEscalation
+from ..utils.config import get_config
+
+# Load configuration for model settings
+config = get_config()
 
 # Initialize module logger using the shared logging utility
 logger = get_logger(__name__)
@@ -346,18 +350,21 @@ class BulletPlanReasoner(BaseReasoner):
         jentic: JenticClient,
         memory: ScratchPadMemory,
         llm: Optional[BaseLLM] = None,
-        model: str = "gpt-4o",
+        model: Optional[str] = None,
         max_iters: int = 20,
-        search_top_k: int = 15,
+        search_top_k: int = 5,  # Start with a smaller k
         intervention_hub: Optional[BaseInterventionHub] = None,
     ) -> None:
+        """Initializes the BulletPlanReasoner."""
+        primary_model = model or config.get("llm", {}).get("model", "gpt-4o")
+
         logger.info(
-            f"Initializing BulletPlanReasoner with model={model}, max_iters={max_iters}, search_top_k={search_top_k}"
+            f"Initializing BulletPlanReasoner with model={primary_model}, max_iters={max_iters}, search_top_k={search_top_k}"
         )
         super().__init__()
         self.jentic = jentic
         self.memory = memory
-        self.llm = llm or LiteLLMChatLLM(model=model)
+        self.llm = llm or LiteLLMChatLLM(model=primary_model)
         self.max_iters = max_iters
         self.search_top_k = search_top_k
         self.escalation = intervention_hub or NoEscalation()
