@@ -46,10 +46,10 @@ class HybridReasoner:
     ):
         """Initializes the HybridReasoner and its underlying reasoners."""
         llm_config = config.get("llm", {})
-        primary_model = model or llm_config.get("model", "gpt-4o")
+        llm_model = model or llm_config.get("model", "gpt-4o")
 
         # Use the same LLM instance for both main reasoning and classification.
-        self.llm = llm or LiteLLMChatLLM(model=primary_model)
+        self.llm = llm or LiteLLMChatLLM(model=llm_model)
         self.classification_llm = self.llm
 
         self.freeform = FreeformReasoner(
@@ -60,7 +60,7 @@ class HybridReasoner:
         )
 
         logger.info(
-            f"HybridReasoner initialized with model '{primary_model}' for all reasoning."
+            f"HybridReasoner initialized with model '{llm_model}' for all reasoning."
         )
 
     def _is_simple_task(self, goal: str) -> bool:

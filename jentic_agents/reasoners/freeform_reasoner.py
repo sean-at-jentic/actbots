@@ -73,16 +73,16 @@ class FreeformReasoner(BaseReasoner):
             intervention_hub: Human intervention hub for escalations
         """
         super().__init__()
-        primary_model = model or config.get("llm", {}).get("model", "gpt-4o")
+        llm_model = model or config.get("llm", {}).get("model", "gpt-4o")
         self.jentic = jentic
         self.memory = memory
-        self.llm = llm or LiteLLMChatLLM(model=primary_model)
+        self.llm = llm or LiteLLMChatLLM(model=llm_model)
         self.max_iterations = max_iterations
         self.include_tool_catalogue = include_tool_catalogue
         self.intervention_hub = intervention_hub or NoEscalation()
 
         logger.info(
-            f"Initialized FreeformReasoner with model={primary_model}, max_iterations={max_iterations}"
+            f"Initialized FreeformReasoner with model={llm_model}, max_iterations={max_iterations}"
         )
 
     def run(self, goal: str, max_iterations: Optional[int] = None) -> ReasoningResult:

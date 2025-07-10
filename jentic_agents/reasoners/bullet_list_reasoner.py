@@ -356,15 +356,15 @@ class BulletPlanReasoner(BaseReasoner):
         intervention_hub: Optional[BaseInterventionHub] = None,
     ) -> None:
         """Initializes the BulletPlanReasoner."""
-        primary_model = model or config.get("llm", {}).get("model", "gpt-4o")
+        llm_model = model or config.get("llm", {}).get("model", "gpt-4o")
 
         logger.info(
-            f"Initializing BulletPlanReasoner with model={primary_model}, max_iters={max_iters}, search_top_k={search_top_k}"
+            f"Initializing BulletPlanReasoner with model={llm_model}, max_iters={max_iters}, search_top_k={search_top_k}"
         )
         super().__init__()
         self.jentic = jentic
         self.memory = memory
-        self.llm = llm or LiteLLMChatLLM(model=primary_model)
+        self.llm = llm or LiteLLMChatLLM(model=llm_model)
         self.max_iters = max_iters
         self.search_top_k = search_top_k
         self.escalation = intervention_hub or NoEscalation()
