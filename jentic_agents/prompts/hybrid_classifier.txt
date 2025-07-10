@@ -1,0 +1,8 @@
+Please classify the following user request as 'SINGLE-STEP' or 'MULTI-STEP'.
+
+SINGLE-STEP tasks are direct commands that can likely be completed with one or 2 tool calls (e.g., 'send a message', 'get the weather and then send a message').
+MULTI-STEP tasks require planning, information gathering, or several actions (e.g., 'research X and write a summary in a document', 'book a flight and then a hotel and then send a message').
+
+Request: "{goal}"
+
+Classification: 

@@ -23,7 +23,8 @@
     "For operations that need specific IDs from URLs or names, create dedicated lookup/extraction steps before the main action.",
     "Store intermediate results with descriptive keys for use in subsequent steps (e.g., 'target_list_id', 'board_data', 'user_info').",
     "Never reference a memory key unless it has been populated by a previous step in the plan",
-    "IMPORTANT: Wrap your entire JSON array output in a markdown code block with triple backticks and json, like this: ``` ... ```"
+    "IMPORTANT: Wrap your entire JSON array output in a markdown code block with triple backticks and json, like this: ``` ... ```",
+    "If the goal provides a resource URL (e.g., board, repo, project, etc.) but the required full resource ID is not directly available, add a step to resolve or look up the full resource ID using the shortLink or identifier from the URL before making dependent API calls."
   ],
 
   "step_identification_guide": {
