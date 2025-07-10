@@ -10,8 +10,8 @@ from .outbox.cli_outbox import CLIOutbox
 from .hitl.cli_intervention_hub import CLIInterventionHub
 
 # Controllers
-from .base_controller import BaseController
-from .cli_controller import CLIController
+from .controllers.base_controller import BaseController
+from .controllers.cli_controller import CLIController
 
 # Backward compatibility aliases
 BaseEscalation = BaseInterventionHub

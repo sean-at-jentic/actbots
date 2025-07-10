@@ -10,7 +10,7 @@ from ..memory.base_memory import BaseMemory
 from ..communication.inbox.base_inbox import BaseInbox
 from ..communication.hitl.base_intervention_hub import BaseInterventionHub
 from ..communication.outbox.base_outbox import BaseOutbox
-from ..communication.base_controller import BaseController
+from ..communication.controllers.base_controller import BaseController
 from ..platform.jentic_client import JenticClient
 
 
@@ -83,6 +83,14 @@ class BaseAgent(ABC):
 
         This is the primary entry point for running the agent.
         Concrete implementations define how the agent interacts with users.
+        """
+        pass
+
+    @abstractmethod
+    def run_agent(self, *args, **kwargs):
+        """
+        Main entry point for running the agent in the appropriate mode.
+        Concrete agents must implement this to handle sync/async execution, etc.
         """
         pass
 

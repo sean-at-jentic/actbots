@@ -7,9 +7,9 @@ from discord.ext import commands
 import logging
 
 from .base_controller import BaseController
-from .inbox.discord_inbox import DiscordInbox
-from .hitl.discord_intervention_hub import DiscordInterventionHub
-from .outbox.discord_outbox import DiscordOutbox
+from ..inbox.discord_inbox import DiscordInbox
+from ..hitl.discord_intervention_hub import DiscordInterventionHub
+from ..outbox.discord_outbox import DiscordOutbox
 
 
 class DiscordController(BaseController):
@@ -130,6 +130,50 @@ class DiscordController(BaseController):
         self.default_channel_id = default_channel_id
         self.escalation_channel_id = escalation_channel_id
         self.notification_user_ids = notification_user_ids
+
+    @staticmethod
+    def create_controller(mode: str):
+        """
+        Create a DiscordController for the given mode (should be 'discord').
+        """
+        if mode != "discord":
+            raise ValueError(f"DiscordController only supports 'discord' mode, got: {mode}")
+        try:
+            import discord
+        except ImportError:
+            raise ImportError("Discord mode requires 'discord.py'. Install it with: pip install discord.py")
+        from jentic_agents.utils.config import get_config_value
+        import os
+        discord_token = os.getenv("DISCORD_BOT_AGENT_TOKEN")
+        discord_user_id = get_config_value("discord", "target_user_id")
+        if not discord_token:
+            raise ValueError("Discord mode requires DISCORD_BOT_AGENT_TOKEN in .env or discord.token in config.json")
+        if not discord_user_id:
+            raise ValueError("Discord mode requires discord.target_user_id in config.json")
+        monitored_channels = get_config_value("discord", "monitored_channels", default=[])
+        default_channel_id = get_config_value("discord", "default_channel_id", default=None)
+        escalation_channel_id = get_config_value("discord", "escalation_channel_id", default=None)
+        command_prefix = get_config_value("discord", "command_prefix", default="!")
+        use_embeds = get_config_value("discord", "use_embeds", default=True)
+        auto_react = get_config_value("discord", "auto_react", default=True)
+        verbose = get_config_value("discord", "verbose", default=True)
+        escalation_timeout = get_config_value("discord", "escalation_timeout", default=300)
+        intents = discord.Intents.default()
+        intents.message_content = True
+        bot = discord.Client(intents=intents)
+        controller = DiscordController(
+            bot=bot,
+            target_user_id=discord_user_id,
+            monitored_channels=monitored_channels if monitored_channels else None,
+            default_channel_id=default_channel_id if default_channel_id else None,
+            escalation_channel_id=escalation_channel_id if escalation_channel_id else None,
+            command_prefix=command_prefix,
+            auto_react=auto_react,
+            use_embeds=use_embeds,
+            verbose=verbose,
+            escalation_timeout=escalation_timeout
+        )
+        return controller, bot, discord_token
     
     def display_welcome(self, channel_id: Optional[int] = None) -> None:
         """Display welcome message to Discord channel."""

@@ -1,6 +1,8 @@
 import tomllib
 from typing import Any, Dict
 from pathlib import Path
+import os
+import sys
 
 _CONFIG_CACHE: Dict[str, Any] = {}
 
@@ -58,3 +60,21 @@ def get_discord_config() -> Dict[str, Any]:
     """Return the discord config as a dict."""
     config = _load_config()
     return config.get("discord", {})
+
+
+def validate_api_keys():
+    """Validate required API keys are present."""
+    if not os.getenv("JENTIC_API_KEY"):
+        print("ERROR: Missing JENTIC_API_KEY in your .env file.")
+        sys.exit(1)
+
+    from .config import get_config_value
+    provider = get_config_value("llm", "provider", default="openai")
+    api_key_map = {
+        "openai": "OPENAI_API_KEY",
+        "gemini": "GEMINI_API_KEY",
+        "anthropic": "ANTHROPIC_API_KEY"
+    }
+    if provider in api_key_map and not os.getenv(api_key_map[provider]):
+        print(f"ERROR: LLM provider is {provider} but {api_key_map[provider]} is not set in .env.")
+        sys.exit(1)

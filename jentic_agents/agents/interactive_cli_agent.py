@@ -222,3 +222,29 @@ class InteractiveCLIAgent(BaseAgent):
     def stop(self) -> None:
         """Stop the agent gracefully."""
         self._running = False
+
+    def run_agent(self, bot=None, discord_token=None, controller=None):
+        """
+        Main entry point for running the agent in the appropriate mode.
+        For CLI mode, runs self.spin(). For Discord mode, sets up async event loop.
+        """
+        if bot and discord_token:
+            from jentic_agents.utils.config import get_config_value
+            import asyncio
+            discord_user_id = get_config_value("discord", "target_user_id")
+            monitored_channels = get_config_value("discord", "monitored_channels", default=[])
+            default_channel_id = get_config_value("discord", "default_channel_id", default=None)
+            @bot.event
+            async def on_ready():
+                print(f"Discord bot logged in as {bot.user}")
+                print(f"Monitoring user: {discord_user_id}")
+                if monitored_channels:
+                    print(f"Monitoring channels: {monitored_channels}")
+                else:
+                    print("Monitoring all channels")
+                if default_channel_id:
+                    controller.display_welcome(default_channel_id)
+                asyncio.create_task(self.spin_async())
+            bot.run(discord_token)
+        else:
+            self.spin()
