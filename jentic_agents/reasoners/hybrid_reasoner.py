@@ -27,6 +27,7 @@ from .base_reasoner import ReasoningResult
 from .bullet_list_reasoner import BulletPlanReasoner
 from .freeform_reasoner import FreeformReasoner
 from ..utils.config import get_config
+from ..utils.prompt_loader import load_prompt
 
 config = get_config()
 logger = get_logger(__name__)
@@ -76,13 +77,8 @@ class HybridReasoner:
         """
         logger.info(f"Classifying task complexity for goal: '{goal}'")
 
-        prompt = (
-            "Please classify the following user request as 'SINGLE-STEP' or 'MULTI-STEP'.\n\n"
-            "SINGLE-STEP tasks are direct commands that can likely be completed with one or 2 tool calls (e.g., 'send a message', 'get the weather and then send a message').\n"
-            "MULTI-STEP tasks require planning, information gathering, or several actions (e.g., 'research X and write a summary in a document', 'book a flight and then a hotel and then send a message').\n\n"
-            f'Request: "{goal}"\n\n'
-            "Classification:"
-        )
+        prompt_template = load_prompt("hybrid_classifier")
+        prompt = prompt_template.format(goal=goal)
 
         try:
             response = (
