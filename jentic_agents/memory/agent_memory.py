@@ -248,7 +248,7 @@ class AgentMemory(BaseMemory):
             "status": "healthy",
             "mem0_config": self.config,
             "timestamp": time.time(),
-            "errors": [],
+            "kv_store_size": len(self._kv),
         }
 
         try:
@@ -261,9 +261,19 @@ class AgentMemory(BaseMemory):
 
         return status
 
+    def resolve_placeholders(self, obj: Any) -> Any:
+        """Placeholder resolution is not supported by AgentMemory."""
+        logger.warning("resolve_placeholders is not implemented in AgentMemory")
+        return obj
+
+    def validate_placeholders(self, args: Dict[str, Any], required_fields: list) -> tuple[Optional[str], Optional[str]]:
+        """Placeholder validation is not supported by AgentMemory."""
+        logger.warning("validate_placeholders is not implemented in AgentMemory")
+        return None, None
+
     # BaseMemory interface implementations
     def store(self, key: str, value: Any) -> None:
-        """Store a value under the given key."""
+        """Store a value in the in-memory key-value dictionary."""
         self._kv[key] = value
 
     def retrieve(self, key: str) -> Optional[Any]:
